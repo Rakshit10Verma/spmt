@@ -1,8 +1,5 @@
 """
-tests/test_rules.py
-
-Tests for the rule definitions in spmt/rules.py.
-Mostly making sure I didn't fat-finger a regex or accidentally duplicate an ID.
+Unit tests for the SPMT rule registry.
 """
 
 import re
@@ -22,14 +19,15 @@ from spmt.rules import (
 )
 
 
-# -- Basic sanity checks on the registry --
+# Structural integrity
 
 class TestRuleRegistry:
-    """Make sure the list of rules isn't broken in obvious ways."""
+    """Make sure the registry loads correctly without errors."""
 
     def test_total_rule_count(self):
-        # MASTER_INDEX has 42 patterns but I split the SAS word operators
-        # (gt/le/ge/lt/ne) into separate rules, so the total is 46.
+        # We should have 46 rules total (42 primary + 4 sub-rules for operators).
+        # The master index groups R-28 into one pattern, but I split them up into 5 here 
+        # for better precision. Change this if we decide to collapse them back down.
         assert len(ALL_RULES) >= 42, (
             f"Expected at least 42 rules, got {len(ALL_RULES)}"
         )
@@ -74,9 +72,10 @@ class TestRuleRegistry:
             )
 
 
-# -- Check that every category actually has rules in it --
+# Category coverage
 
 class TestCategoryCoverage:
+    """Check that we don't have any empty categories."""
 
     def test_all_categories_populated(self):
         grouped = get_rules_by_category()
@@ -95,7 +94,7 @@ class TestCategoryCoverage:
         assert len(grouped[RuleCategory.JOIN_PATTERNS]) >= 3
 
 
-# -- Test the helper functions --
+# Lookup helpers
 
 class TestLookupHelpers:
 
@@ -120,17 +119,16 @@ class TestLookupHelpers:
             assert rule.oracle_replacement == "__KEEP__"
 
     def test_handler_regex_keep_partition_is_complete(self):
-        # every rule should be in exactly one of the three buckets
         total = len(get_handler_rules()) + len(get_regex_rules()) + len(get_keep_rules())
         assert total == len(ALL_RULES)
 
 
-# -- Does each regex actually match the SAS syntax it's supposed to catch? --
-# I'm using snippets from the real test case files (TC-01 through TC-08) here.
+# Pattern matching — verify each regex fires on representative SAS input
 
 class TestPatternMatching:
+    """Spot check that the regex actually catches the right SAS code."""
 
-    # null handling
+    # --- NULL handling ---
     def test_r01_is_missing(self):
         assert get_rule_by_id("R-01").sas_pattern.search("WHERE x IS MISSING")
 
@@ -146,7 +144,7 @@ class TestPatternMatching:
     def test_r34_sas_sum(self):
         assert get_rule_by_id("R-34").sas_pattern.search("sum(t1.credit_limit, (-1)*val)")
 
-    # date functions
+    # --- Date functions ---
     def test_r05_intnx_begin(self):
         rule = get_rule_by_id("R-05")
         m = rule.sas_pattern.search('INTNX("MONTH", &report_date., 0, "BEGIN")')
@@ -179,7 +177,7 @@ class TestPatternMatching:
         rule = get_rule_by_id("R-27")
         assert rule.sas_pattern.search("mdy(&report_month., 1, &report_year.)")
 
-    # string functions
+    # --- String functions ---
     def test_r12_upcase(self):
         assert get_rule_by_id("R-12").sas_pattern.search("UPCASE(t1.name)")
 
@@ -196,7 +194,7 @@ class TestPatternMatching:
         rule = get_rule_by_id("R-16")
         assert rule.sas_pattern.search('COMPRESS(t1.PHONE_RAW, , "kd")')
 
-    # macro variables
+    # --- Macro variables ---
     def test_r02_macro_var_with_dot(self):
         rule = get_rule_by_id("R-02")
         m = rule.sas_pattern.search("&report_date.")
@@ -224,7 +222,7 @@ class TestPatternMatching:
         rule = get_rule_by_id("R-37")
         assert rule.sas_pattern.search('%include "\\\\server\\scripts\\macros\\std.sas";')
 
-    # type conversion
+    # --- Type conversion ---
     def test_r20_put_numeric_format(self):
         rule = get_rule_by_id("R-20")
         assert rule.sas_pattern.search("PUT(t1.tariff_code, TARIF.)")
@@ -243,7 +241,7 @@ class TestPatternMatching:
             'CHOOSEC(INPUT(t1.INTEREST_LOCK_TYPE_CD, 10.), "Fixed", "Variable")'
         )
 
-    # SAS keywords
+    # --- SAS keywords ---
     def test_r17_outer_union_corr(self):
         assert get_rule_by_id("R-17").sas_pattern.search("OUTER UNION CORR")
 
@@ -289,14 +287,14 @@ class TestPatternMatching:
         assert m is not None
         assert m.group(1) == "WORK.CONTRACT_SPLITS"
 
-    # table mapping
+    # --- Table mapping ---
     def test_r35_work_table(self):
         rule = get_rule_by_id("R-35")
         m = rule.sas_pattern.search("FROM WORK.ACTIVE_CONTRACTS t1")
         assert m is not None
         assert m.group(1) == "ACTIVE_CONTRACTS"
 
-    # join patterns
+    # --- Join patterns ---
     def test_r32_right_join(self):
         assert get_rule_by_id("R-32").sas_pattern.search("RIGHT JOIN work.contracts t1")
 
@@ -306,9 +304,12 @@ class TestPatternMatching:
         )
 
 
-# -- For rules with direct regex replacements, check the actual output --
+# ---------------------------------------------------------------------------
+# Regex replacement — verify simple (non-handler) rules produce correct output
+# ---------------------------------------------------------------------------
 
 class TestRegexReplacements:
+    """For rules with direct regex replacements, verify the substitution output."""
 
     def test_r01_is_missing_to_is_null(self):
         rule = get_rule_by_id("R-01")
@@ -406,7 +407,9 @@ class TestRegexReplacements:
         assert "AS score" in result
 
 
-# -- Quick check that the summary function doesn't blow up --
+# ---------------------------------------------------------------------------
+# Summary output
+# ---------------------------------------------------------------------------
 
 class TestSummary:
 

@@ -1,0 +1,37 @@
+{
+    "_comment": "Maps SAS macro variable names to Pentaho parameter metadata.",
+    "_usage": "Keys are lowercase SAS variable names (without & or dot). 'pentaho_name' is the ${...} parameter name. 'type' drives TO_DATE wrapping for date params. 'date_format' is the Oracle format mask used in TO_DATE().",
+
+    "date_variables": {
+        "report_date":          { "pentaho_name": "prop_report_date",          "type": "date", "date_format": "YYYYMMDD" },
+        "report_end_date":      { "pentaho_name": "prop_report_end_date",      "type": "date", "date_format": "YYYYMMDD" },
+        "reporting_date":       { "pentaho_name": "prop_reporting_date",        "type": "date", "date_format": "YYYYMMDD" },
+        "greportdate":          { "pentaho_name": "prop_gReportDate",           "type": "date", "date_format": "YYYYMMDD" },
+        "greferencedatestr":    { "pentaho_name": "prop_gReferenceDateStr",     "type": "date", "date_format": "YYYYMMDD" },
+        "dwh_month_end_date":   { "pentaho_name": "prop_DWH_MONTH_END_DATE",   "type": "date", "date_format": "YYYYMMDD" },
+        "dwh_reporting_date":   { "pentaho_name": "prop_DWH_REPORTING_DATE",    "type": "date", "date_format": "YYYYMMDD" }
+    },
+
+    "period_variables": {
+        "period_key":           { "pentaho_name": "prop_period_key",            "type": "numeric" },
+        "report_period":        { "pentaho_name": "prop_report_period",         "type": "numeric" },
+        "queue_entry":          { "pentaho_name": "prop_queue_entry",           "type": "numeric" },
+        "gperiode":             { "pentaho_name": "prop_gPeriode",              "type": "string" },
+        "gperiodetable":        { "pentaho_name": "prop_gPeriodeTable",         "type": "string" }
+    },
+
+    "string_variables": {
+        "mandant_code":         { "pentaho_name": "prop_mandant_code",          "type": "string" },
+        "client_code":          { "pentaho_name": "prop_client_code",           "type": "string" },
+        "org_unit":             { "pentaho_name": "prop_org_unit",              "type": "string" },
+        "dwh_org_unit":         { "pentaho_name": "prop_DWH_ORG_UNIT",         "type": "string" }
+    },
+
+    "numeric_variables": {
+        "report_month":         { "pentaho_name": "prop_report_month",          "type": "numeric" },
+        "report_year":          { "pentaho_name": "prop_report_year",           "type": "numeric" }
+    },
+
+    "default_date_format": "YYYYMMDD",
+    "default_pentaho_prefix": "prop_"
+}

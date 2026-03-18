@@ -17,7 +17,7 @@ import pytest
 from spmt.variable_handler import MacroDeclaration, VariableHandler
 
 
-# Fixtures 
+# ---- Fixtures ----
 
 @pytest.fixture
 def config_path(tmp_path: Path) -> str:
@@ -94,12 +94,12 @@ def handler(config_path: str) -> VariableHandler:
 
 @pytest.fixture
 def handler_no_config() -> VariableHandler:
-    """Handler with no config at all. everything gets auto-generated names."""
+    """Handler with no config at all - everything gets auto-generated names."""
     return VariableHandler()
 
 
+# ---- 1. Config loading ----
 
-# 1. Config loading 
 class TestConfigLoading:
 
     def test_loads_all_sections(self, handler: VariableHandler):
@@ -135,7 +135,7 @@ class TestConfigLoading:
         assert pname1 == pname2
 
 
-# 2. %LET / %GLOBAL extraction 
+# ---- 2. %LET / %GLOBAL extraction ----
 
 class TestExtractDeclarations:
 
@@ -194,7 +194,7 @@ class TestExtractDeclarations:
         assert decls[0].name == "MY_VAR"
 
 
-# 3. Pattern A: date literal "&var."d -> TO_DATE(...) 
+# ---- 3. Pattern A: date literal "&var."d -> TO_DATE(...) ----
 # SAS has this weird thing where you can put a macro var inside a date
 # literal. Like "&report_end_date."d means "resolve the variable, then
 # treat the whole thing as a date." Oracle needs TO_DATE() instead.
@@ -214,7 +214,7 @@ class TestPatternDateLiteral:
         assert "TO_DATE(" in result.converted_sql
 
 
-# 4. Pattern B: quoted string "&var." -> '${prop_var}' 
+# ---- 4. Pattern B: quoted string "&var." -> '${prop_var}' ----
 # SAS uses double quotes when it wants macro resolution inside strings.
 # Oracle only does single quotes. So I need to swap the quotes and
 # replace the variable at the same time.
@@ -241,7 +241,7 @@ class TestPatternQuotedString:
         assert "'${prop_org_unit}'" in result.converted_sql
 
 
-# 5. Pattern C: double dot &schema..table -> ${prop_schema}.table 
+# ---- 5. Pattern C: double dot &schema..table -> ${prop_schema}.table ----
 # This is the confusing one. In SAS &var.. means "the variable ends here
 # (first dot) and there's a real dot after it (second dot)." It shows up
 # in dynamic table names like source.CUSTOMERS_&gPeriodeTable.
@@ -254,7 +254,7 @@ class TestPatternDoubleDot:
         assert "${prop_gPeriodeTable}" in result.converted_sql
 
 
-# 6. Pattern D: bare var with dot &var. -> ${prop_var} 
+# ---- 6. Pattern D: bare var with dot &var. -> ${prop_var} ----
 # The bread and butter case. Dot just means "this is where the
 # variable name ends."
 
@@ -281,7 +281,7 @@ class TestPatternBareVarDot:
         assert "&num" in result.converted_sql
 
 
-# 7. Pattern E: bare var no dot &var -> ${prop_var} 
+# ---- 7. Pattern E: bare var no dot &var -> ${prop_var} ----
 # Sometimes people just leave the dot off, usually inside function calls
 # where commas or parens make the boundary clear to SAS.
 
@@ -300,7 +300,7 @@ class TestPatternBareVarNoDot:
         assert "${prop_report_year}" in result.converted_sql
 
 
-# 8. Unmapped variables 
+# ---- 8. Unmapped variables ----
 # If a variable isn't in the config, I still convert it (using an
 # auto-generated name) but I also emit a warning. Had a bug earlier
 # where I was scanning the already-converted output for warnings
@@ -325,7 +325,7 @@ class TestUnmappedVariables:
         assert "${prop_foo}" in result.converted_sql
 
 
-# 9. Integration tests 
+# ---- 9. Integration tests ----
 # These use actual SQL snippets from the test case files to make sure
 # everything works together and not just in isolation.
 

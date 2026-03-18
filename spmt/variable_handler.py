@@ -9,7 +9,7 @@ Pentaho uses ${prop_var} instead, which is at least consistent.
 I handle five substitution patterns here, and the order matters a LOT.
 If I run the generic &var. pattern first, it'll eat the dot that was
 actually part of a date literal like "&report_date."d, and then the
-TO_DATE wrapper never fires. So I go from most specific to least specific:
+TO_DATE wrapper never fires. So I go from most-specific to least-specific:
 
   1. "&var."d            -> TO_DATE('${prop_var}','YYYYMMDD')  (date literal)
   2. "&var."             -> '${prop_var}'                      (quoted string)
@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-# Data classes
+# ---- Data classes ----
 
 @dataclass
 class MacroDeclaration:
@@ -61,12 +61,12 @@ class SubstitutionResult:
     warnings: List[str] = field(default_factory=list)
 
 
-# Variable Handler 
+# ---- Variable Handler ----
 
 class VariableHandler:
     """Does the actual &var -> ${prop_var} conversion work."""
 
-    # Regex for %LET and %GLOBAL lines. Case insensitive because SAS doesn't
+    # Regex for %LET and %GLOBAL lines. Case-insensitive because SAS doesn't
     # care about casing and neither do the people writing these files.
     _RE_LET = re.compile(
         r"^\s*%LET\s+(\w+)\s*=\s*(.+?)\s*;\s*$",
@@ -83,17 +83,17 @@ class VariableHandler:
         re.IGNORECASE | re.MULTILINE,
     )
 
-    # Macro reference patterns 
+    # ---- Macro reference patterns ----
     #
     # The ordering here is the whole trick. SAS overloads the dot character
     # to mean like three different things depending on context, so I have to
     # match the most specific patterns first or everything breaks.
     #
     # Pattern A - date literal:   "&var."d  or  "&var"d
-    #   e.g. "&report_end_date."d > TO_DATE('${prop_report_end_date}','YYYYMMDD')
+    #   e.g. "&report_end_date."d -> TO_DATE('${prop_report_end_date}','YYYYMMDD')
     #
     # Pattern B - quoted string:  "&var."  or  "&var"
-    #   e.g. "&client_code."  > '${prop_client_code}'
+    #   e.g. "&client_code."  -> '${prop_client_code}'
     #   (also swaps double quotes to single quotes, because Oracle)
     #
     # Pattern C - double-dot (table name):  &schema..identifier
@@ -101,7 +101,7 @@ class VariableHandler:
     #   e.g. source.CUSTOMERS_&gPeriodeTable.  (dot consumed, SQL dot kept)
     #
     # Pattern D - bare with dot:   &var.
-    # Pattern E - bare no dot:     &var  (word boundary)
+    # Pattern E - bare no dot:     &var  (word-boundary)
 
     # A: "&var."d  or  "&var"d  - SAS date literal containing a macro var
     _RE_DATE_LIT_QUOTED = re.compile(
@@ -131,7 +131,7 @@ class VariableHandler:
         if config_path:
             self.load_config(config_path)
 
-    # Configuration
+    # ---- Configuration ----
 
     def load_config(self, config_path: str) -> None:
         """Read variable mappings from JSON config."""
@@ -169,7 +169,7 @@ class VariableHandler:
         # Not mapped - auto-generate a name
         return (f"{self._default_prefix}{sas_name}", "string", self._default_date_format)
 
-    # %LET / %GLOBAL extraction 
+    # ---- %LET / %GLOBAL extraction ----
 
     def extract_declarations(self, sas_source: str) -> List[MacroDeclaration]:
         """Pull all %LET and %GLOBAL declarations out of SAS source.
@@ -223,14 +223,14 @@ class VariableHandler:
 
         return list(seen.values())
 
-    #  Substitution engine 
+    # ---- Substitution engine ----
 
     def substitute(self, sql: str) -> SubstitutionResult:
         """Replace all &var references in sql with Pentaho ${...} syntax.
 
-        This is the main work. I apply patterns A through E in order
+        This is the main workhorse. I apply patterns A through E in order
         so that the more specific ones (date literals, quoted strings) get
-        matched before the generic bare variable patterns can detect them.
+        matched before the generic bare-variable patterns can eat them.
         """
         result = sql
         subs: List[str] = []
@@ -327,7 +327,7 @@ class VariableHandler:
             warnings=warnings,
         )
 
-    # TO_DATE wrapping for bare date variables 
+    # ---- TO_DATE wrapping for bare date variables ----
 
     def wrap_date_variables(self, sql: str) -> str:
         """Wrap bare date ${...} params with TO_DATE() if they aren't already.
@@ -367,7 +367,7 @@ class VariableHandler:
 
         return result
 
-    # High-level pipeline 
+    # ---- High-level pipeline ----
 
     def process(self, sas_source: str) -> Tuple[List[MacroDeclaration], SubstitutionResult]:
         """Run the whole thing: extract declarations, then substitute variables.

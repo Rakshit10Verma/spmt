@@ -1,0 +1,26 @@
+{
+    "library_mappings": {
+        "WORK": {
+            "oracle_schema": "STAGING",
+            "table_prefix": "TMP_",
+            "description": "SAS temporary tables mapped to staging schema with TMP_ prefix"
+        },
+        "SOURCE": {
+            "oracle_schema": "SOURCE_DATA",
+            "table_prefix": "",
+            "description": "Source system tables"
+        },
+        "DWH": {
+            "oracle_schema": "DWH_PROD",
+            "table_prefix": "",
+            "description": "Data warehouse dimension and fact tables"
+        },
+        "STAGING": {
+            "oracle_schema": "STAGING",
+            "table_prefix": "",
+            "description": "Staging area tables"
+        }
+    },
+    "default_schema": "DBO",
+    "default_prefix": ""
+}
