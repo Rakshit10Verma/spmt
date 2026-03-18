@@ -15,7 +15,7 @@ This tool was developed as part of a master's thesis comparing rule-based migrat
 Requires Python 3.10 or later. No runtime dependencies outside the standard library.
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/spmt.git
+git clone https://github.com/Rakshit10Verma/spmt.git
 cd spmt
 pip install -e ".[dev]"
 ```
