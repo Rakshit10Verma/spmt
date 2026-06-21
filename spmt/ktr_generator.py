@@ -204,6 +204,27 @@ def _build_connection_element(
     return conn
 
 
+def _build_step_hop(from_step: str, to_step: str) -> ET.Element:
+    """Build a <hop> element that connects two steps in sequence.
+
+    In Pentaho, hops define the data flow between steps. The from_step
+    sends its output to the to_step. Multiple hops between steps create
+    the transformation pipeline.
+
+    Args:
+        from_step:  Name of the source step.
+        to_step:    Name of the destination step.
+
+    Returns:
+        A <hop> element configured for sequential execution.
+    """
+    hop = ET.Element("hop")
+    ET.SubElement(hop, "from").text = from_step
+    ET.SubElement(hop, "to").text = to_step
+    ET.SubElement(hop, "enabled").text = "Y"
+    return hop
+
+
 def _build_table_input_step(
     step_name: str,
     sql: str,
@@ -338,6 +359,12 @@ def generate_ktr(
         step_names.append(step_name)
 
     result.step_count = len(step_names)
+
+    # Create hops to connect steps sequentially
+    # Each step connects to the next in order, forming a pipeline
+    for i in range(len(step_names) - 1):
+        hop_elem = _build_step_hop(step_names[i], step_names[i + 1])
+        root.append(hop_elem)
 
     # Step error handling (empty — Pentaho expects the element)
     ET.SubElement(root, "step_error_handling")

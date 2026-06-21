@@ -76,7 +76,7 @@ class FakeTableMapper:
 
 
 def _block(sql, number=1):
-    return ParsedBlock(number, sql)
+    return ParsedBlock(number, sql, line_start=1, line_end=1)
 
 
 # Category: null handling
@@ -165,7 +165,8 @@ def test_type_conversion_put_and_choosec_warn():
     result = Converter().convert_block(_block(sql))
     assert any("PUT" in w for w in result.warnings)
     assert any("CHOOSEC" in w for w in result.warnings)
-    assert "PUT(" in result.converted_sql
+    assert "CASE WHEN" in result.converted_sql  # PUT() converts to CASE WHEN placeholder
+    assert "TO_CHAR" in result.converted_sql  # PUT() handler generates TO_CHAR
     assert "CHOOSEC(" in result.converted_sql
 
 
@@ -252,10 +253,10 @@ def test_convert_file_collects_drops_and_parameters():
     parse_result = ParseResult(
         sql_blocks=[_block("PROC SQL; CREATE TABLE WORK.X AS SELECT a FROM SOURCE.Y t1; QUIT;")],
         macro_declarations=[
-            MacroDeclaration("report_date", "20250531"),
-            MacroDeclaration("client_code", "ABC"),
+            MacroDeclaration("report_date", "20250531", "LET", 1),
+            MacroDeclaration("client_code", "ABC", "LET", 2),
         ],
-        dropds_calls=[DropdsCall("WORK.X")],
+        dropds_calls=[DropdsCall("WORK.X", 3)],
         source_file="unit.sas",
     )
     result = Converter().convert_file(parse_result)

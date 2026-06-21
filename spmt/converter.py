@@ -659,14 +659,37 @@ class Converter:
 
     def _h_put(self, sql: str) -> Tuple[str, Optional[str], List[str]]:
         """PUT applies a SAS format catalog, which does not exist in Oracle. I
-        cannot read the format values from here, so I leave the call in place and
-        raise a warning. The real conversion is a CASE WHEN or a lookup table and
-        that needs the format definition, which is a manual step."""
+        generate a placeholder CASE WHEN that applies TO_CHAR() as a fallback,
+        but the real format conversion needs manual review of the SAS format
+        definition. The placeholder allows the SQL to execute with reasonable
+        defaults while flagging that custom formatting is needed."""
         warnings: List[str] = []
+        
+        # Match PUT(column, format_name) with optional outer parens/aliases
+        # Pattern captures: column_expr, format_name
+        pattern = r"\(?\s*PUT\s*\(\s*([^,]+?)\s*,\s*(\$?\w+\.?)\s*\)\s*\)?"
+        
+        def replace_put(match: re.Match) -> str:
+            column_expr = match.group(1).strip()
+            format_name = match.group(2).strip()
+            
+            # Generate a placeholder CASE WHEN with a comment about the format
+            # This allows Oracle to execute while marking where format conversion is needed
+            placeholder = (
+                f"(CASE WHEN {column_expr} IS NULL THEN NULL "
+                f"ELSE TO_CHAR({column_expr}) END) /* SAS format: {format_name} */"
+            )
+            return placeholder
+        
         if re.search(r"\bPUT\s*\(", sql, re.IGNORECASE):
+            # Extract format name from first PUT() call for the warning
+            fmt_match = re.search(pattern, sql, re.IGNORECASE)
+            format_name = fmt_match.group(2).strip() if fmt_match else "unknown"
+            
+            sql = re.sub(pattern, replace_put, sql, flags=re.IGNORECASE)
             warnings.append(
-                "PUT() uses a SAS format catalog with no Oracle equivalent -- "
-                "replace it with a CASE WHEN or a lookup table by hand."
+                f"PUT() converted to placeholder CASE WHEN -- verify format [{format_name}] "
+                "mappings are correct (SAS formats do not have Oracle equivalents)."
             )
         return sql, None, warnings
 

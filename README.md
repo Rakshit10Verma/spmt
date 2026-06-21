@@ -17,15 +17,20 @@ Requires Python 3.10 or later. No runtime dependencies outside the standard libr
 ```bash
 git clone https://github.com/Rakshit10Verma/spmt.git
 cd spmt
+```
+
+Install the package in editable mode with the dev extras:
+
+```bash
 pip install -e ".[dev]"
 ```
 
-The `[dev]` extra installs pytest, pytest-cov, and pylint for development and testing.
+That installs the package itself plus `pytest` and `pytest-cov` in the virtual environment.
 
-Alternatively, install just the test dependencies:
+For a one-command setup plus test run, use:
 
 ```bash
-pip install -r requirements.txt
+./scripts/bootstrap_and_test.sh
 ```
 
 ## Usage
@@ -42,19 +47,32 @@ Generate Oracle SQL, a Pentaho `.ktr` file, and a migration report:
 python -m spmt input.sas --output ./results/ --format both --report
 ```
 
-Generate learning documentation alongside the conversion:
+Run the same CLI through the repository wrapper:
 
 ```bash
-python -m spmt input.sas --output ./results/ --report --learn --verbose
+python main.py input.sas --output ./results/ --format both --report --learn
 ```
 
-Options:
+Supported options:
 
-    --output DIR       Output directory (default: ./output/)
-    --format TYPE      Output format: sql, ktr, or both (default: sql)
-    --report           Generate a migration report in Markdown
-    --learn            Generate learning documentation for each converted block
-    --verbose          Print conversion details to the console
+  input_path             SAS file or directory of .sas files
+  --output DIR           Output directory (default: output/)
+  --format TYPE          Output format: sql, ktr, or both (default: both)
+  --report               Generate a migration report in Markdown
+  --learn                Generate learning notes in Markdown
+  --transformation-name  Pentaho transformation name
+  --connection-name      Pentaho connection name
+  --host                Oracle host for the KTR placeholder
+  --port                Oracle port for the KTR placeholder
+  --db-name             Oracle database name for the KTR placeholder
+  --schema              Default schema shown in the KTR placeholder
+  --username            Oracle username shown in the KTR placeholder
+
+The CLI flow is:
+
+1. Parse the SAS file into blocks and macro declarations.
+2. Convert each block through variable handling, table mapping, and the rule engine.
+3. Write SQL, KTR, report, and learning-doc outputs based on the flags you choose.
 
 ## Architecture
 
@@ -64,7 +82,7 @@ Those parsed blocks go into `converter.py`, which is where the actual work happe
 
 Once conversion is done, the converted SQL can go two places. It gets written out as a plain `.sql` file. If you asked for Pentaho output, `ktr_generator.py` also wraps each SQL block into a Table Input step inside a valid `.ktr` XML file that Pentaho can open directly.
 
-Optionally, `documenter.py` reads the conversion results and produces two Markdown files: a migration report (what changed, which rules fired, any warnings) and a learning document that explains each conversion for someone unfamiliar with the differences between SAS and Oracle SQL.
+The current codebase focuses on the parser, converter, table mapper, variable handler, and KTR generator. Documentation and reporting features can be layered on top of those building blocks.
 
 ## Conversion rules
 
@@ -88,7 +106,7 @@ The 42 rules are organized into 8 categories:
 
 There are also 8 rules covering less common patterns: time-slice filters, `PK_STAND` period keys, correlated subqueries for lookups, `NVL` chains for null-safe arithmetic, the SAS `sum()` function (which ignores NULLs, unlike Oracle's `+` operator), inline `VALUES` subqueries, dynamic table suffixes, and the `%_eg_conditional_dropds` macro.
 
-The full matrix showing which rules apply to which test cases is in `MASTER_INDEX.md`.
+The bundled tests cover the rule matrix directly.
 
 ## Test suite
 
@@ -110,13 +128,13 @@ That's 38 SQL blocks total, covering all 42 conversion patterns at least once.
 Run the tests:
 
 ```bash
-pytest tests/ -v
+python -m pytest tests/ -v
 ```
 
 With coverage:
 
 ```bash
-pytest tests/ -v --cov=spmt --cov-report=term-missing
+python -m pytest tests/ -v --cov=spmt --cov-report=term-missing
 ```
 
 ## Project structure
@@ -130,12 +148,11 @@ spmt/
   table_mapper.py      SAS library.table to Oracle schema.table
   converter.py         Core engine, orchestrates everything
   ktr_generator.py     Pentaho .ktr XML output
-  documenter.py        Migration reports and learning docs
-  cli.py               Command-line interface
-  __main__.py          Entry point for python -m spmt
+  __main__.py          CLI entry point for python -m spmt
 config/
   variable_mappings.json
   table_mappings.json
+main.py                Root wrapper for python main.py
 tests/
   fixtures/            TC-01 through TC-08 .sas files
   test_parser.py
@@ -144,9 +161,6 @@ tests/
   test_table_mapper.py
   test_converter.py
   test_ktr_generator.py
-  test_documenter.py
-docs/
-output/
 ```
 
 ## License
