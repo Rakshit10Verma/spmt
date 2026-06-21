@@ -172,8 +172,9 @@ class Converter:
         warnings += w
         sql, a = self._remove_format_label(sql)
         applied += a
-        sql, a = self._remove_order_by_in_ctas(sql)
+        sql, a, w = self._remove_order_by_in_ctas(sql)
         applied += a
+        warnings += w
         sql, a = self._rename_name_literals(sql)
         applied += a
 
@@ -370,13 +371,14 @@ class Converter:
         """Rule ids that the smart handlers and later stages already cover, so
         the warning pass does not flag them as unhandled."""
         return [
-            _rid("missing", "R-01"),
+            _rid("IS [NOT] MISSING", "R-01"),
+            _rid("SAS sum() NULL-safe arithmetic", "R-34"),
             _rid("31dec9999", "R-11"),
-            _rid("contains", "R-36"),
-            _rid("name literal", "R-25"),
-            _rid("order by", "R-29"),
-            _rid("format", "R-18"),
-            _rid("label", "R-19"),
+            _rid("CONTAINS 'value'", "R-36"),
+            _rid("SAS name literal", "R-25"),
+            _rid("ORDER BY in CREATE TABLE AS SELECT", "R-29"),
+            _rid("FORMAT= attribute", "R-18"),
+            _rid("LABEL= attribute", "R-19"),
         ]
 
     def _run_smart_handlers(self, sql: str) -> Tuple[str, List[str], List[str]]:
@@ -392,6 +394,7 @@ class Converter:
             self._h_active_record,
             self._h_date_literal,
             self._h_is_missing,
+            self._h_sum,
             self._h_contains,
             self._h_compress,
             self._h_today,
@@ -457,6 +460,93 @@ class Converter:
 
         sql = pattern.sub(repl, sql)
         return sql, (rid if fired[0] else None), []
+
+    def _split_top_level_args(self, args_text: str) -> List[str]:
+        """Split function arguments by commas that are outside parens/quotes."""
+        args: List[str] = []
+        depth = 0
+        quote: Optional[str] = None
+        start = 0
+        i = 0
+        while i < len(args_text):
+            ch = args_text[i]
+            if quote:
+                if ch == quote:
+                    quote = None
+                i += 1
+                continue
+            if ch in ("'", '"'):
+                quote = ch
+                i += 1
+                continue
+            if ch == "(":
+                depth += 1
+            elif ch == ")" and depth > 0:
+                depth -= 1
+            elif ch == "," and depth == 0:
+                args.append(args_text[start:i].strip())
+                start = i + 1
+            i += 1
+        args.append(args_text[start:].strip())
+        return args
+
+    def _h_sum(self, sql: str) -> Tuple[str, Optional[str], List[str]]:
+        """Convert SAS sum(a,b,...) NULL-safe arithmetic to NVL(a,0)+NVL(b,0).
+
+        Aggregate SUM(col) is already valid in Oracle and is left untouched.
+        """
+        rid = _rid("NULL-safe arithmetic", "R-34")
+        fired = False
+        out: List[str] = []
+        i = 0
+        lower = sql.lower()
+        while i < len(sql):
+            m = re.search(r"\bsum\s*\(", lower[i:])
+            if not m:
+                out.append(sql[i:])
+                break
+
+            start = i + m.start()
+            open_paren = i + m.end() - 1
+            out.append(sql[i:start])
+
+            depth = 1
+            j = open_paren + 1
+            quote: Optional[str] = None
+            while j < len(sql):
+                ch = sql[j]
+                if quote:
+                    if ch == quote:
+                        quote = None
+                    j += 1
+                    continue
+                if ch in ("'", '"'):
+                    quote = ch
+                elif ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+
+            if j >= len(sql) or depth != 0:
+                out.append(sql[start:])
+                break
+
+            args_text = sql[open_paren + 1 : j]
+            args = self._split_top_level_args(args_text)
+            # One arg means Oracle aggregate SUM() or plain scalar pass-through.
+            if len(args) <= 1:
+                out.append(sql[start : j + 1])
+            else:
+                fired = True
+                nvl_terms = [f"NVL({a}, 0)" for a in args]
+                out.append("(" + " + ".join(nvl_terms) + ")")
+
+            i = j + 1
+
+        return "".join(out), (rid if fired else None), []
 
     def _h_contains(self, sql: str) -> Tuple[str, Optional[str], List[str]]:
         """SAS CONTAINS has no Oracle keyword. The equivalent is LIKE with the
@@ -557,6 +647,14 @@ class Converter:
         def repl(m):
             fired[0] = True
             month, day, year = m.group(1).strip(), m.group(2).strip(), m.group(3).strip()
+            if (
+                re.fullmatch(r"\d{1,2}", month)
+                and re.fullmatch(r"\d{1,2}", day)
+                and re.fullmatch(r"\d{4}", year)
+            ):
+                month_i = int(month)
+                day_i = int(day)
+                return f"TO_DATE('{year}-{month_i:02d}-{day_i:02d}', 'YYYY-MM-DD')"
             return f"TO_DATE({year} || '-' || {month} || '-' || {day}, 'YYYY-MM-DD')"
 
         sql = pattern.sub(repl, sql)
@@ -664,31 +762,28 @@ class Converter:
         definition. The placeholder allows the SQL to execute with reasonable
         defaults while flagging that custom formatting is needed."""
         warnings: List[str] = []
-        
-        # Match PUT(column, format_name) with optional outer parens/aliases
-        # Pattern captures: column_expr, format_name
-        pattern = r"\(?\s*PUT\s*\(\s*([^,]+?)\s*,\s*(\$?\w+\.?)\s*\)\s*\)?"
-        
+
+        # Use a word boundary so PUT is not matched inside INPUT(...).
+        pattern = re.compile(
+            r"\bPUT\s*\(\s*([^,()]+?)\s*,\s*(\$?\w+\.?)\s*\)",
+            re.IGNORECASE,
+        )
+        seen_formats: list[str] = []
+
         def replace_put(match: re.Match) -> str:
             column_expr = match.group(1).strip()
             format_name = match.group(2).strip()
-            
-            # Generate a placeholder CASE WHEN with a comment about the format
-            # This allows Oracle to execute while marking where format conversion is needed
-            placeholder = (
+            seen_formats.append(format_name)
+            return (
                 f"(CASE WHEN {column_expr} IS NULL THEN NULL "
                 f"ELSE TO_CHAR({column_expr}) END) /* SAS format: {format_name} */"
             )
-            return placeholder
-        
-        if re.search(r"\bPUT\s*\(", sql, re.IGNORECASE):
-            # Extract format name from first PUT() call for the warning
-            fmt_match = re.search(pattern, sql, re.IGNORECASE)
-            format_name = fmt_match.group(2).strip() if fmt_match else "unknown"
-            
-            sql = re.sub(pattern, replace_put, sql, flags=re.IGNORECASE)
+
+        sql, count = pattern.subn(replace_put, sql)
+        if count:
+            sample = ", ".join(sorted(set(seen_formats))[:3])
             warnings.append(
-                f"PUT() converted to placeholder CASE WHEN -- verify format [{format_name}] "
+                f"PUT() converted to placeholder CASE WHEN -- verify format [{sample}] "
                 "mappings are correct (SAS formats do not have Oracle equivalents)."
             )
         return sql, None, warnings
@@ -730,17 +825,17 @@ class Converter:
 
     # Stage 7: ORDER BY in a CTAS
 
-    def _remove_order_by_in_ctas(self, sql: str) -> Tuple[str, List[str]]:
+    def _remove_order_by_in_ctas(self, sql: str) -> Tuple[str, List[str], List[str]]:
         """Oracle will not accept ORDER BY inside CREATE TABLE AS SELECT. I only
         strip an ORDER BY that sits at the top level of the statement, not one
         inside a subquery in parentheses, and only when this block is actually a
         CREATE TABLE or CREATE VIEW."""
         if not re.search(r"CREATE\s+(?:TABLE|VIEW)\b", sql, re.IGNORECASE):
-            return sql, []
+            return sql, [], []
 
         index = self._find_top_level_order_by(sql)
         if index is None:
-            return sql, []
+            return sql, [], []
 
         # Cut from ORDER BY up to the trailing semicolon or the end of the text.
         tail = sql[index:]
@@ -749,7 +844,14 @@ class Converter:
             new_sql = sql[:index].rstrip()
         else:
             new_sql = sql[:index].rstrip() + tail[semi:]
-        return new_sql.rstrip(), [_rid("order by", "R-29")]
+        return (
+            new_sql.rstrip(),
+            [_rid("order by", "R-29")],
+            [
+                "ORDER BY removed from CTAS/CREATE VIEW block -- Oracle does not "
+                "preserve physical row order in table storage."
+            ],
+        )
 
     def _find_top_level_order_by(self, sql: str) -> Optional[int]:
         """Return the position of an ORDER BY that is outside any parentheses and
@@ -789,7 +891,7 @@ class Converter:
         the same column keeps the same name everywhere it appears, including in
         later blocks that reference it."""
         applied: List[str] = []
-        pattern = re.compile(r"'([^']+)'[nN]")
+        pattern = re.compile(r"'([^'\r\n]+)'[nN](?![A-Za-z0-9_])")
         fired = [False]
 
         def repl(m):

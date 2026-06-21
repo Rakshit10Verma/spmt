@@ -222,6 +222,39 @@ class TestStepContent:
             assert pos not in positions, f"Duplicate position: {pos}"
             positions.add(pos)
 
+    def test_drop_steps_inserted_before_matching_sql_steps(self, single_block):
+        drops = [
+            "BEGIN\n"
+            "   EXECUTE IMMEDIATE 'DROP TABLE STAGING.TMP_CUSTOMER_FILTERED';\n"
+            "EXCEPTION\n"
+            "   WHEN OTHERS THEN IF SQLCODE != -942 THEN RAISE; END IF;\n"
+            "END;\n/"
+        ]
+        result = generate_ktr(single_block, drop_statements=drops)
+        root = ET.fromstring(result.xml_string)
+        names = [n.text for n in root.findall("step/name")]
+        assert names[0].startswith("DROP_01_STAGING.TMP_CUSTOMER_FILTERED")
+        assert names[1].startswith("SQL_01_STAGING.TMP_CUSTOMER_FILTERED")
+
+        types = [t.text for t in root.findall("step/type")]
+        assert types[0] == "ExecSQL"
+        assert types[1] == "TableInput"
+
+    def test_drop_and_sql_are_connected_in_hops(self, single_block):
+        drops = [
+            "BEGIN\n"
+            "   EXECUTE IMMEDIATE 'DROP TABLE STAGING.TMP_CUSTOMER_FILTERED';\n"
+            "EXCEPTION\n"
+            "   WHEN OTHERS THEN IF SQLCODE != -942 THEN RAISE; END IF;\n"
+            "END;\n/"
+        ]
+        result = generate_ktr(single_block, drop_statements=drops)
+        root = ET.fromstring(result.xml_string)
+        hop_from = root.find("hop/from").text
+        hop_to = root.find("hop/to").text
+        assert hop_from.startswith("DROP_01_STAGING.TMP_CUSTOMER_FILTERED")
+        assert hop_to.startswith("SQL_01_STAGING.TMP_CUSTOMER_FILTERED")
+
 
 # Step layout
 

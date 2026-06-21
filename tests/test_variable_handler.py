@@ -240,6 +240,26 @@ class TestPatternQuotedString:
         assert "AND y = 2" in result.converted_sql
         assert "'${prop_org_unit}'" in result.converted_sql
 
+    def test_quoted_macro_does_not_corrupt_other_double_quoted_literals(self, handler: VariableHandler):
+        sql = (
+            'CASE t1.DWH_RATING\n'
+            '  WHEN "1" THEN "Fixed Rate"\n'
+            '  ELSE "Unknown"\n'
+            'END AS RATE_TYPE_DESC,\n'
+            'CASE\n'
+            '  WHEN t1.DWH_END_DATE < INTNX("month", &report_date., 6, "E")\n'
+            '  THEN "Expiring Soon"\n'
+            '  ELSE "Active"\n'
+            'END AS DATE_STATUS'
+        )
+        result = handler.substitute(sql)
+        assert 'ELSE "Unknown"' in result.converted_sql
+        assert 'THEN "Expiring Soon"' in result.converted_sql
+        assert 'ELSE "Active"' in result.converted_sql
+        assert "Unknown'" not in result.converted_sql
+        assert "'Expiring Soon\"" not in result.converted_sql
+        assert "${prop_report_date}" in result.converted_sql
+
 
 # ---- 5. Pattern C: double dot &schema..table -> ${prop_schema}.table ----
 # This is the confusing one. In SAS &var.. means "the variable ends here

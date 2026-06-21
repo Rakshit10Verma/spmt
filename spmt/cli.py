@@ -173,6 +173,7 @@ def main(argv: list[str] | None = None) -> int:
             ]
             ktr_result = generate_ktr(
                 ktr_blocks,
+                drop_statements=conversion_result.drop_statements,
                 transformation_name=args.transformation_name,
                 description=args.description,
                 connection_name=args.connection_name,

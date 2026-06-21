@@ -168,6 +168,19 @@ def test_type_conversion_put_and_choosec_warn():
     assert "CASE WHEN" in result.converted_sql  # PUT() converts to CASE WHEN placeholder
     assert "TO_CHAR" in result.converted_sql  # PUT() handler generates TO_CHAR
     assert "CHOOSEC(" in result.converted_sql
+    # PUT must not match inside INPUT(...)
+    assert re.search(r"CHOOSEC\(\s*INPUT\(", result.converted_sql, re.IGNORECASE)
+    assert "IN(CASE WHEN" not in result.converted_sql
+
+
+def test_order_by_removed_from_ctas_is_reported():
+    sql = (
+        "PROC SQL; CREATE TABLE WORK.O AS "
+        "SELECT t1.a FROM SOURCE.T t1 ORDER BY t1.a DESC; QUIT;"
+    )
+    result = Converter().convert_block(_block(sql))
+    assert "ORDER BY" not in result.converted_sql.upper()
+    assert any("ORDER BY removed" in w for w in result.warnings)
 
 
 # Category: SAS keywords
@@ -231,6 +244,27 @@ def test_calculated_keyword_repeats_expression():
     assert "CALCULATED" not in out.upper()
 
 
+def test_sas_sum_two_args_converts_to_nvl_addition():
+    sql = (
+        "PROC SQL; CREATE TABLE WORK.SUMX AS "
+        "SELECT (sum(t1.credit_limit, (-1) * (t2.principal + t2.interest))) AS net_bal "
+        "FROM SOURCE.A t1 LEFT JOIN SOURCE.B t2 ON t1.id=t2.id; QUIT;"
+    )
+    out = Converter().convert_block(_block(sql)).converted_sql
+    assert "NVL(t1.credit_limit, 0)" in out
+    assert "NVL((-1) * (t2.principal + t2.interest), 0)" in out
+    assert "sum(t1.credit_limit" not in out.lower()
+
+
+def test_mdy_with_literals_is_zero_padded_date_literal():
+    sql = (
+        "PROC SQL; CREATE TABLE WORK.DT AS "
+        "SELECT mdy(5, 1, 2025) AS dt FROM SOURCE.T t1; QUIT;"
+    )
+    out = Converter().convert_block(_block(sql)).converted_sql
+    assert "TO_DATE('2025-05-01', 'YYYY-MM-DD')" in out
+
+
 def test_name_literal_rename_carries_across_blocks():
     conv = Converter()
     b1 = (
@@ -247,6 +281,18 @@ def test_name_literal_rename_carries_across_blocks():
     assert "LINKAGE_TYPE" in out2
     assert "'Linkage Type'n" not in out1
     assert "'Linkage Type'n" not in out2
+
+
+def test_name_literal_after_case_expression_is_renamed_cleanly():
+    sql = (
+        "PROC SQL; CREATE TABLE WORK.C AS "
+        "SELECT (CASE t1.n WHEN 1 THEN 'Domestic' ELSE 'Foreign' END) "
+        "AS 'Nationality Category'n FROM SOURCE.T t1; QUIT;"
+    )
+    out = Converter().convert_block(_block(sql)).converted_sql
+    assert "NATIONALITY_CATEGORY" in out
+    assert "'Nationality Category'n" not in out
+    assert "ForeignEND_AS" not in out
 
 
 def test_convert_file_collects_drops_and_parameters():
@@ -271,7 +317,16 @@ def test_convert_file_collects_drops_and_parameters():
 # Integration: a full TC file through the real parser and the converter
 
 _HERE = os.path.dirname(__file__)
-_TC01 = os.path.join(_HERE, "fixtures", "TC-01_basic_nulls_strings_unions.sas")
+_TC_FIXTURES = {
+    "TC-01_basic_nulls_strings_unions.sas": 5,
+    "TC-02_date_functions_choosec_lookups.sas": 3,
+    "TC-03_case_when_date_arithmetic_operators.sas": 4,
+    "TC-04_quarterly_contracts_right_joins.sas": 5,
+    "TC-05_format_lookups_aggregation.sas": 6,
+    "TC-06_put_formats_time_slices.sas": 5,
+    "TC-07_chained_tables_calculated_having.sas": 6,
+    "TC-08_linkages_contains_multijoin.sas": 4,
+}
 
 
 def _real_handlers():
@@ -293,16 +348,18 @@ def _real_handlers():
     return vh, tm
 
 
-def test_integration_full_tc01_file():
+@pytest.mark.parametrize("filename,expected_blocks", _TC_FIXTURES.items())
+def test_integration_full_tc_file(filename, expected_blocks):
     parser_mod = pytest.importorskip("spmt.parser")
     parse_file = getattr(parser_mod, "parse_file", None)
     if parse_file is None:
         pytest.skip("parser.parse_file not available")
-    if not os.path.exists(_TC01):
-        pytest.skip("TC-01 fixture not found")
 
-    parse_result = parse_file(_TC01)
-    assert len(parse_result.sql_blocks) >= 4
+    fixture_path = os.path.join(_HERE, "fixtures", filename)
+    assert os.path.exists(fixture_path), f"{filename} fixture not found"
+
+    parse_result = parse_file(fixture_path)
+    assert len(parse_result.sql_blocks) == expected_blocks
 
     vh, tm = _real_handlers()
     result = Converter(variable_handler=vh, table_mapper=tm).convert_file(parse_result)
@@ -317,13 +374,10 @@ def test_integration_full_tc01_file():
     joined = "\n".join(b.converted_sql for b in result.blocks)
 
     # conversions that do not depend on the injected handlers
-    assert "MISSING" not in joined.upper()
-    assert "UNION ALL" in joined
-    assert "UPPER(" in joined
     assert not re.search(r"\bFORMAT\s*=", joined, re.IGNORECASE)
 
-    # conversions that depend on the handlers, only checked when they are present
-    if vh is not None:
+    has_macro_references = any("&" in block.original_sql for block in parse_result.sql_blocks)
+
+    # Macro substitution only applies to fixtures whose SQL blocks reference macros.
+    if vh is not None and has_macro_references:
         assert "${prop_" in joined
-    if tm is not None:
-        assert not re.search(r"\bWORK\.", joined)

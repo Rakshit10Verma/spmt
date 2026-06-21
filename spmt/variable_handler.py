@@ -249,13 +249,14 @@ class VariableHandler:
 
         result = self._RE_DATE_LIT_QUOTED.sub(_repl_date_lit, result)
 
-        # Pattern B: double-quoted strings containing &var
-        # SAS uses double quotes for strings with macro resolution, Oracle
-        # uses single quotes for everything. So I need to swap the quotes
-        # AND replace the variables inside.
-        def _repl_quoted_segment(m: re.Match) -> str:
-            full = m.group(0)  # includes quotes
-            inner = full[1:-1]  # strip quotes
+        # Pattern B: double-quoted strings containing &var.
+        # Important: process each quoted token independently. A broad pattern
+        # that searches for "...&var..." can accidentally start at one quote
+        # and end at another quote many lines later, corrupting CASE literals.
+        def _repl_quoted_token(m: re.Match) -> str:
+            inner = m.group(1)
+            if "&" not in inner:
+                return m.group(0)
 
             def _inner_var(vm: re.Match) -> str:
                 name = vm.group(1)
@@ -266,7 +267,7 @@ class VariableHandler:
             converted_inner = re.sub(r"&(\w+)\.?", _inner_var, inner)
             return f"'{converted_inner}'"
 
-        result = re.sub(r'"([^"]*&\w+[^"]*)"', _repl_quoted_segment, result)
+        result = re.sub(r'"([^"\r\n]*)"', _repl_quoted_token, result)
 
         # Pattern C: &var..identifier  (the double-dot situation)
         # In SAS, the first dot ends the variable name and the second dot is

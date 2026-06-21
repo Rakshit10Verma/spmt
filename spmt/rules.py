@@ -442,7 +442,7 @@ R24 = ConversionRule(
 R25 = ConversionRule(
     rule_id="R-25",
     category=RuleCategory.SAS_KEYWORDS,
-    sas_pattern=_pat(r"'([^']+)'n"),
+    sas_pattern=_pat(r"'([^'\r\n]+)'[nN](?![A-Za-z0-9_])", flags=0),
     oracle_replacement="__HANDLER__",
     description="'Column Name'n (SAS name literal) → COLUMN_NAME (valid Oracle identifier)",
     complexity=Complexity.MEDIUM,

@@ -15,7 +15,7 @@ from pathlib import Path
 from spmt.parser import parse_string, parse_file, ParsedBlock, MacroDeclaration
 
 
-TC_DIR = Path("/mnt/project")
+TC_DIR = Path(__file__).parent / "fixtures"
 
 def tc_path(name: str) -> Path:
     p = TC_DIR / name
@@ -366,14 +366,14 @@ class TestFileIO:
 
 # Hardcoded block counts from MASTER_INDEX.md
 EXPECTED_BLOCK_COUNTS = {
-    "TC-01_basic_nulls_strings_unions.txt": 5,
-    "TC-02_date_functions_choosec_lookups.txt": 3,
-    "TC-03_case_when_date_arithmetic_operators.txt": 4,
-    "TC-04_quarterly_contracts_right_joins.txt": 5,
-    "TC-05_format_lookups_aggregation.txt": 6,
-    "TC-06_put_formats_time_slices.txt": 5,
-    "TC-07_chained_tables_calculated_having.txt": 6,
-    "TC-08_linkages_contains_multijoin.txt": 4,
+    "TC-01_basic_nulls_strings_unions.sas": 5,
+    "TC-02_date_functions_choosec_lookups.sas": 3,
+    "TC-03_case_when_date_arithmetic_operators.sas": 4,
+    "TC-04_quarterly_contracts_right_joins.sas": 5,
+    "TC-05_format_lookups_aggregation.sas": 6,
+    "TC-06_put_formats_time_slices.sas": 5,
+    "TC-07_chained_tables_calculated_having.sas": 6,
+    "TC-08_linkages_contains_multijoin.sas": 4,
 }
 
 
@@ -414,7 +414,7 @@ class TestIntegrationWithTestCases:
 
     def test_tc08_skips_macro_definition(self):
         # TC-08 has a macro that drops tables. Make sure we didn't scrape it.
-        path = tc_path("TC-08_linkages_contains_multijoin.txt")
+        path = tc_path("TC-08_linkages_contains_multijoin.sas")
         result = parse_file(path)
         assert len(result.sql_blocks) == 4
         for block in result.sql_blocks:
@@ -423,7 +423,7 @@ class TestIntegrationWithTestCases:
     def test_tc08_macro_internal_lets_excluded(self):
         """The %let num=1 and %let dsname=... inside the macro def
         should not appear in macro_declarations."""
-        path = tc_path("TC-08_linkages_contains_multijoin.txt")
+        path = tc_path("TC-08_linkages_contains_multijoin.sas")
         result = parse_file(path)
         let_names = [m.name for m in result.macro_declarations if m.directive == "LET"]
         assert "num" not in let_names
@@ -431,7 +431,7 @@ class TestIntegrationWithTestCases:
 
     def test_tc05_has_globals_and_lets(self):
         # TC-05 has lines like: %GLOBAL gRef;      %LET gRef = value;
-        path = tc_path("TC-05_format_lookups_aggregation.txt")
+        path = tc_path("TC-05_format_lookups_aggregation.sas")
         result = parse_file(path)
         globs = [m for m in result.macro_declarations if m.directive == "GLOBAL"]
         lets = [m for m in result.macro_declarations if m.directive == "LET"]
@@ -440,7 +440,7 @@ class TestIntegrationWithTestCases:
 
     def test_tc03_has_dropds_calls(self):
         """TC-03 uses %_eg_conditional_dropds before each block."""
-        path = tc_path("TC-03_case_when_date_arithmetic_operators.txt")
+        path = tc_path("TC-03_case_when_date_arithmetic_operators.sas")
         result = parse_file(path)
         assert len(result.dropds_calls) == 4
         # Each dropds should reference a WORK. table
