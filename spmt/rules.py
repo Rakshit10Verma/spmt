@@ -465,7 +465,7 @@ R26 = ConversionRule(
 R28 = ConversionRule(
     rule_id="R-28",
     category=RuleCategory.SAS_KEYWORDS,
-    sas_pattern=_pat(r"(?<!\w)\bgt\b(?!\w)"),
+    sas_pattern=_pat(r"(?<=[\w.)\s])\bgt\b(?=\s*[\w.('-])"),
     oracle_replacement=">",
     description="SAS word operator 'gt' → '>'",
     complexity=Complexity.BASIC,
@@ -475,7 +475,7 @@ R28 = ConversionRule(
 R28b = ConversionRule(
     rule_id="R-28b",
     category=RuleCategory.SAS_KEYWORDS,
-    sas_pattern=_pat(r"(?<!\w)\ble\b(?!\w)"),
+    sas_pattern=_pat(r"(?<=[\w.)\s])\ble\b(?=\s*[\w.('-])"),
     oracle_replacement="<=",
     description="SAS word operator 'le' → '<='",
     complexity=Complexity.BASIC,
@@ -484,7 +484,7 @@ R28b = ConversionRule(
 R28c = ConversionRule(
     rule_id="R-28c",
     category=RuleCategory.SAS_KEYWORDS,
-    sas_pattern=_pat(r"(?<!\w)\bge\b(?!\w)"),
+    sas_pattern=_pat(r"(?<=[\w.)\s])\bge\b(?=\s*[\w.('-])"),
     oracle_replacement=">=",
     description="SAS word operator 'ge' → '>='",
     complexity=Complexity.BASIC,
@@ -493,7 +493,7 @@ R28c = ConversionRule(
 R28d = ConversionRule(
     rule_id="R-28d",
     category=RuleCategory.SAS_KEYWORDS,
-    sas_pattern=_pat(r"(?<!\w)\blt\b(?!\w)"),
+    sas_pattern=_pat(r"(?<=[\w.)\s])\blt\b(?=\s*[\w.('-])"),
     oracle_replacement="<",
     description="SAS word operator 'lt' → '<'",
     complexity=Complexity.BASIC,
@@ -502,7 +502,7 @@ R28d = ConversionRule(
 R28e = ConversionRule(
     rule_id="R-28e",
     category=RuleCategory.SAS_KEYWORDS,
-    sas_pattern=_pat(r"(?<!\w)\bne\b(?!\w)"),
+    sas_pattern=_pat(r"(?<=[\w.)\s])\bne\b(?=\s*[\w.('-])"),
     oracle_replacement="<>",
     description="SAS word operator 'ne' → '<>'",
     complexity=Complexity.BASIC,

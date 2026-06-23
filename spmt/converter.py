@@ -581,8 +581,8 @@ class Converter:
             fired[0] = True
             return f"REPLACE({m.group(1).strip()}, ' ', '')"
 
-        sql = re.sub(r"COMPRESS\(\s*([^,()]+?)\s*,\s*,\s*'kd'\s*\)", kd, sql, flags=re.IGNORECASE)
-        sql = re.sub(r"COMPRESS\(\s*([^,()]+?)\s*,\s*,\s*'ka'\s*\)", ka, sql, flags=re.IGNORECASE)
+        sql = re.sub(r"COMPRESS\(\s*([^,()]+?)\s*,\s*,\s*[\"']kd[\"']\s*\)", kd, sql, flags=re.IGNORECASE)
+        sql = re.sub(r"COMPRESS\(\s*([^,()]+?)\s*,\s*,\s*[\"']ka[\"']\s*\)", ka, sql, flags=re.IGNORECASE)
         sql = re.sub(r"COMPRESS\(\s*([^,()]+?)\s*\)", plain, sql, flags=re.IGNORECASE)
         return sql, (rid if fired[0] else None), []
 

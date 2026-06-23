@@ -270,10 +270,16 @@ class TestPatternMatching:
         assert get_rule_by_id("R-26").sas_pattern.search("NOT = '09'")
 
     def test_r28_gt(self):
-        assert get_rule_by_id("R-28").sas_pattern.search("t2.valid_to gt")
+        assert get_rule_by_id("R-28").sas_pattern.search("t2.valid_to gt t1.valid_from")
 
     def test_r28b_le(self):
-        assert get_rule_by_id("R-28b").sas_pattern.search("t2.valid_from le")
+        assert get_rule_by_id("R-28b").sas_pattern.search("t2.valid_from le t2.valid_to")
+
+    def test_r28_word_operators_do_not_match_inside_quotes(self):
+        assert get_rule_by_id("R-28e").sas_pattern.search("'NE'") is None
+
+    def test_r28_word_operators_do_not_match_alias_name(self):
+        assert get_rule_by_id("R-28e").sas_pattern.search("SELECT t1.col AS ne,") is None
 
     def test_r36_contains(self):
         rule = get_rule_by_id("R-36")
