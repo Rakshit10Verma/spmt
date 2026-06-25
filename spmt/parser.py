@@ -36,31 +36,24 @@ class ParseResult:
     source_file: str = ""
 
 
-# Compiled patterns
-# We have to nuke %macro blocks first. Otherwise, the regex picks up nested 
-# proc sql definitions, which breaks things. dotall makes '.' grab newlines too.
-
+# Strip %macro blocks first — otherwise the regex picks up nested PROC SQL
+# definitions inside macros. dotall makes '.' grab newlines.
 _RE_MACRO_DEF = re.compile(
     r"%macro\b.*?%mend\b[^;]*;",
     re.IGNORECASE | re.DOTALL,
 )
-
-# Matching PROC SQL; ... QUIT; with flexible whitespace and casing.
-# Capturing everything between PROC SQL and QUIT.
 
 _RE_PROC_SQL = re.compile(
     r"(PROC\s+SQL\s*;.*?QUIT\s*;)",
     re.IGNORECASE | re.DOTALL,
 )
 
-# SAS values can have nested macro calls (like %SYSFUNC). 
-# We just grab everything up to the semicolon to be safe.
+# grab everything to the semicolon — values can contain nested macro calls like %SYSFUNC
 _RE_LET = re.compile(
     r"%LET\s+(\w+)\s*=\s*(.+?)\s*;",
     re.IGNORECASE,
 )
 
-# Declaration without assignment
 _RE_GLOBAL = re.compile(
     r"%GLOBAL\s+(\w+)\s*;",
     re.IGNORECASE,
@@ -77,35 +70,33 @@ def _line_number_at_offset(text: str, offset: int) -> int:
 
 
 def _strip_macro_definitions(text: str) -> str:
-    """
-    Stripping out macro bodies but replacing them with empty newlines.
-    doing this so the line numbers don't get shifted for the rest of the file.
-    """
+    """Replace each %macro...%mend block with empty lines to preserve line numbering."""
     result = text
     for match in _RE_MACRO_DEF.finditer(text):
         original = match.group(0)
-        # Replace with the same number of newlines to preserve line counts
         replacement = "\n" * original.count("\n")
         result = result.replace(original, replacement, 1)
     return result
 
 
 def parse_file(filepath: str | Path) -> ParseResult:
-    """
-    Scraping a .sas file for the parts we want to convert.
-    """
+    """Scrape a .sas file for PROC SQL blocks, %LET declarations, and dropds calls."""
     filepath = Path(filepath)
-    raw_text = filepath.read_text(encoding="utf-8-sig")
+    for enc in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
+        try:
+            raw_text = filepath.read_text(encoding=enc)
+            break
+        except (UnicodeDecodeError, LookupError):
+            continue
+    else:
+        raw_text = filepath.read_text(encoding="latin-1", errors="replace")
 
     result = ParseResult(source_file=str(filepath))
 
-    # Getting rid of macro definitions before doing anything else.
-    # If we don't, we end up parsing inner %let statements and 
-    # nested proc sql that shouldn't run yet.
+    # strip macro bodies first to avoid parsing inner %let statements and
+    # nested PROC SQL that shouldn't be processed
     cleaned_text = _strip_macro_definitions(raw_text)
 
-    # Grabing the standalone macros. We'll filter out the ones stuck inside
-    # PROC SQL blocks later.
     all_lets: list[tuple[str, str, int]] = []  # (name, value, line)
     for match in _RE_LET.finditer(cleaned_text):
         line = _line_number_at_offset(cleaned_text, match.start())
@@ -116,7 +107,6 @@ def parse_file(filepath: str | Path) -> ParseResult:
         line = _line_number_at_offset(cleaned_text, match.start())
         all_globals.append((match.group(1), line))
 
-    # Pulling out the actual SQL logic
     for match in _RE_DROPDS.finditer(cleaned_text):
         line = _line_number_at_offset(cleaned_text, match.start())
         result.dropds_calls.append(DropdsCall(
@@ -135,14 +125,12 @@ def parse_file(filepath: str | Path) -> ParseResult:
             line_end=line_end,
         ))
 
-    
     def _is_outside_proc_sql(line_num: int) -> bool:
-        """Check that a line number doesn't fall inside any PROC SQL block."""
         for block in result.sql_blocks:
             if block.line_start <= line_num <= block.line_end:
                 return False
         return True
-    # Keeping only the macros that sit outside the SQL blocks
+
     for name, value, line in all_lets:
         if _is_outside_proc_sql(line):
             result.macro_declarations.append(MacroDeclaration(
@@ -161,7 +149,6 @@ def parse_file(filepath: str | Path) -> ParseResult:
                 line_number=line,
             ))
 
-    # Sorting declarations by line number so they appear in file order
     result.macro_declarations.sort(key=lambda d: d.line_number)
 
     return result

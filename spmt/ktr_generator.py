@@ -1,19 +1,4 @@
-"""
-spmt/ktr_generator.py
-
-Generates a Pentaho Data Integration .ktr (transformation) file from
-converted Oracle SQL blocks.
-
-Pentaho stores transformations as XML. Each SQL block becomes a Table Input
-step that Pentaho can execute against an Oracle database. The generator
-also creates database connection placeholders and lays out steps in a grid
-so the transformation opens with a clean visual layout in Spoon (the PDI
-designer).
-
-I chose xml.etree.ElementTree over string templates because it handles
-XML escaping automatically — important since SQL strings often contain
-angle brackets, ampersands, and quotes that would break raw XML.
-"""
+"""Generate Pentaho .ktr XML from converted Oracle SQL blocks. Uses ElementTree for auto-escaping."""
 
 from __future__ import annotations
 
@@ -25,67 +10,38 @@ from pathlib import Path
 from typing import Optional
 
 
-# Result dataclass
-
 @dataclass
 class KtrResult:
-    """Output from the KTR generation process.
-
-    Attributes:
-        xml_string:   The complete .ktr XML as a string.
-        step_count:   Number of Table Input steps created.
-        warnings:     Any issues encountered during generation.
-    """
+    """Result of KTR generation: XML string, step count, warnings."""
     xml_string: str = ""
     step_count: int = 0
     warnings: list[str] = field(default_factory=list)
 
 
-# Input dataclass — what the converter feeds us
-
 @dataclass
 class SqlBlock:
-    """A single converted SQL block ready for embedding in a .ktr step.
-
-    The converter produces these after running the full pipeline
-    (variable substitution, table mapping, rule application).
-
-    Attributes:
-        block_number:   Sequential position from the source .sas file.
-        converted_sql:  Oracle-compatible SQL to embed in the Table Input step.
-        source_table:   Target table name from the CREATE TABLE statement,
-                        or None if the block is a non-CTAS query.
-        rules_applied:  Rule IDs that were used during conversion (for docs).
-    """
+    """One converted SQL block ready for a KTR Table Input step."""
     block_number: int
     converted_sql: str
     source_table: Optional[str] = None
     rules_applied: list[str] = field(default_factory=list)
 
 
-# Layout constants
-
-# Starting X/Y position for the first step in the Spoon canvas.
+# Starting canvas position for the first step in Spoon
 _BASE_X = 150
 _BASE_Y = 150
 
-# Horizontal spacing between steps. Pentaho's default grid is roughly
-# 100px per step, but 200 gives a cleaner layout when step labels are long.
+# 200px spacing gives a cleaner layout when step labels are long
 _STEP_SPACING_X = 250
 
-# Maximum steps per row before wrapping to the next line.
+# wrap to a new row after this many steps
 _STEPS_PER_ROW = 4
 
-# Vertical spacing when wrapping to a new row.
 _ROW_SPACING_Y = 200
 
 
 def _step_position(index: int) -> tuple[int, int]:
-    """Calculate the x, y canvas position for step number *index* (0-based).
-
-    Steps are laid out left-to-right in rows. After _STEPS_PER_ROW steps
-    the layout wraps to the next row so the canvas stays readable.
-    """
+    """Map step index to (x, y) canvas coordinates, wrapping after _STEPS_PER_ROW."""
     col = index % _STEPS_PER_ROW
     row = index // _STEPS_PER_ROW
     x = _BASE_X + col * _STEP_SPACING_X
@@ -94,12 +50,7 @@ def _step_position(index: int) -> tuple[int, int]:
 
 
 def _build_info_element(name: str, description: str) -> ET.Element:
-    """Build the <info> element with transformation metadata.
-
-    This is the header Pentaho reads to display the transformation name,
-    description, and engine settings. Most values are Pentaho defaults —
-    I only customised the name and description fields.
-    """
+    """Build the <info> element (transformation name, description, Pentaho defaults)."""
     info = ET.Element("info")
 
     ET.SubElement(info, "name").text = name
@@ -108,11 +59,10 @@ def _build_info_element(name: str, description: str) -> ET.Element:
     ET.SubElement(info, "trans_version")
     ET.SubElement(info, "trans_type").text = "Normal"
 
-    # Pentaho uses these for internal scheduling. Defaults are fine.
     ET.SubElement(info, "trans_status").text = "0"
     ET.SubElement(info, "directory").text = "/"
 
-    # Logging and performance settings — all defaults
+    # logging and performance settings — all defaults
     log = ET.SubElement(info, "log")
     for log_type in ("trans-log-table", "perf-log-table",
                      "channel-log-table", "step-log-table",
@@ -125,7 +75,6 @@ def _build_info_element(name: str, description: str) -> ET.Element:
         ET.SubElement(log_table, "interval")
         ET.SubElement(log_table, "timeout_days")
 
-    # Misc engine settings
     ET.SubElement(info, "maxdateconnection")
     ET.SubElement(info, "maxdatetable")
     ET.SubElement(info, "maxdatefield")
@@ -143,7 +92,6 @@ def _build_info_element(name: str, description: str) -> ET.Element:
     ET.SubElement(info, "step_performance_capturing_delay").text = "1000"
     ET.SubElement(info, "step_performance_capturing_size_limit").text = "100"
 
-    # Created / modified timestamps
     now_str = datetime.now().strftime("%Y/%m/%d %H:%M:%S.%f")[:-3]
     ET.SubElement(info, "created_user").text = "SPMT"
     ET.SubElement(info, "created_date").text = now_str
@@ -161,13 +109,7 @@ def _build_connection_element(
     schema: str = "",
     username: str = "dwh_user",
 ) -> ET.Element:
-    """Build a <connection> element for an Oracle database.
-
-    These are placeholder values — the real connection details get
-    configured in Pentaho when the transformation is deployed. Having
-    the structure here means Pentaho can open the .ktr without errors
-    and the user just updates the credentials.
-    """
+    """Build Oracle <connection> element with placeholder credentials."""
     conn = ET.Element("connection")
 
     ET.SubElement(conn, "name").text = conn_name
@@ -182,7 +124,6 @@ def _build_connection_element(
     ET.SubElement(conn, "data_tablespace")
     ET.SubElement(conn, "index_tablespace")
 
-    # Connection pooling — Pentaho defaults
     attrs = ET.SubElement(conn, "attributes")
     for key, val in [
         ("FORCE_IDENTIFIERS_TO_LOWERCASE", "N"),
@@ -206,19 +147,7 @@ def _build_connection_element(
 
 
 def _build_step_hop(from_step: str, to_step: str) -> ET.Element:
-    """Build a <hop> element that connects two steps in sequence.
-
-    In Pentaho, hops define the data flow between steps. The from_step
-    sends its output to the to_step. Multiple hops between steps create
-    the transformation pipeline.
-
-    Args:
-        from_step:  Name of the source step.
-        to_step:    Name of the destination step.
-
-    Returns:
-        A <hop> element configured for sequential execution.
-    """
+    """Build a sequential <hop> between two steps."""
     hop = ET.Element("hop")
     ET.SubElement(hop, "from").text = from_step
     ET.SubElement(hop, "to").text = to_step
@@ -233,11 +162,7 @@ def _build_table_input_step(
     x: int,
     y: int,
 ) -> ET.Element:
-    """Build a <step> element for a Pentaho Table Input step.
-
-    Table Input is the standard step type for running SQL against a
-    database. The SQL goes into <sql> and Pentaho executes it at runtime.
-    """
+    """Build a TableInput <step> element for running SQL against the DB."""
     step = ET.Element("step")
 
     ET.SubElement(step, "name").text = step_name
@@ -247,12 +172,10 @@ def _build_table_input_step(
     ET.SubElement(step, "custom_distribution")
     ET.SubElement(step, "copies").text = "1"
 
-    # Partition handling — not needed for simple table reads
     partitioning = ET.SubElement(step, "partitioning")
     ET.SubElement(partitioning, "method").text = "none"
     ET.SubElement(partitioning, "schema_name")
 
-    # The actual SQL and connection reference
     ET.SubElement(step, "connection").text = connection_name
     ET.SubElement(step, "sql").text = sql
     ET.SubElement(step, "limit").text = "0"
@@ -261,7 +184,6 @@ def _build_table_input_step(
     ET.SubElement(step, "variables_active").text = "Y"
     ET.SubElement(step, "lazy_conversion_active").text = "N"
 
-    # Canvas position for Spoon layout
     gui = ET.SubElement(step, "GUI")
     ET.SubElement(gui, "xloc").text = str(x)
     ET.SubElement(gui, "yloc").text = str(y)
@@ -277,11 +199,7 @@ def _build_exec_sql_step(
     x: int,
     y: int,
 ) -> ET.Element:
-    """Build a Pentaho Execute SQL Script step.
-
-    This is used for DDL/PLSQL blocks such as conditional DROP TABLE logic
-    that should run before CTAS statements.
-    """
+    """Build an ExecSQL <step> element for DDL/PL-SQL (DROP blocks)."""
     step = ET.Element("step")
 
     ET.SubElement(step, "name").text = step_name
@@ -311,12 +229,7 @@ def _build_exec_sql_step(
 
 
 def _extract_table_name(sql: str) -> Optional[str]:
-    """Try to pull the target table name from a CREATE TABLE statement.
-
-    Looks for CREATE TABLE schema.table or CREATE TABLE table at the
-    start of the SQL. Returns None if it's not a CTAS query (e.g. a
-    plain SELECT or a DROP TABLE).
-    """
+    """Pull target table name from a CREATE TABLE statement."""
     match = re.match(
         r"\s*CREATE\s+TABLE\s+([\w$.{}]+(?:\.[\w$.{}]+)?)",
         sql,
@@ -328,10 +241,9 @@ def _extract_table_name(sql: str) -> Optional[str]:
 
 
 def _extract_drop_target(drop_sql: str) -> Optional[str]:
-    """Extract target table from a generated DROP block.
+    """Pull table name from a generated DROP block.
 
-    Expected pattern in drop_sql:
-    EXECUTE IMMEDIATE 'DROP TABLE SCHEMA.TABLE';
+    Expected pattern: EXECUTE IMMEDIATE 'DROP TABLE SCHEMA.TABLE';
     """
     match = re.search(
         r"DROP\s+TABLE\s+([\w$.{}]+)\s*'",
@@ -351,40 +263,18 @@ def generate_ktr(
     connection_name: str = "oracle_dwh",
     connection_config: Optional[dict] = None,
 ) -> KtrResult:
-    """Generate a Pentaho .ktr transformation from converted SQL blocks.
-
-    Each SqlBlock becomes a Table Input step. Steps are laid out in a grid
-    on the Spoon canvas. A placeholder Oracle connection is included so the
-    .ktr opens without errors in Pentaho.
-
-    Args:
-        sql_blocks:           Converted SQL blocks from the converter.
-        drop_statements:      Optional DROP/PLSQL statements to run before
-                      matching CTAS blocks.
-        transformation_name:  Name shown in Pentaho's transformation tab.
-        description:          Description metadata for the transformation.
-        connection_name:      Name of the database connection to reference.
-        connection_config:    Optional dict with host, port, db_name, schema,
-                              username keys to override the default placeholder.
-
-    Returns:
-        KtrResult with the XML string, step count, and any warnings.
-    """
+    """Build a complete .ktr transformation from SQL blocks and optional DROP statements."""
     result = KtrResult()
 
     if not sql_blocks:
         result.warnings.append("No SQL blocks provided — generated empty transformation")
 
-    # Root element
     root = ET.Element("transformation")
-
-    # Transformation metadata
     root.append(_build_info_element(transformation_name, description))
 
-    # Notepads section (empty but Pentaho expects it)
+    # Pentaho expects a notepads element even when empty
     ET.SubElement(root, "notepads")
 
-    # Database connection
     conn_cfg = connection_config or {}
     root.append(_build_connection_element(
         conn_name=connection_name,
@@ -395,23 +285,20 @@ def generate_ktr(
         username=conn_cfg.get("username", "dwh_user"),
     ))
 
-    # Map drop statements by target table for easy pre-step insertion.
+    # map drops by table for pre-step pairing
     drop_by_table: dict[str, str] = {}
     for stmt in drop_statements or []:
         target = _extract_drop_target(stmt)
         if target:
             drop_by_table[target.upper()] = stmt
 
-    # Build executable steps in order.
-    # If a block creates a table with a matching drop statement, emit an
-    # ExecSQL step right before the TableInput step.
     step_names = []
     for block in sql_blocks:
-        # Build a descriptive step name
         table = block.source_table or _extract_table_name(block.converted_sql)
         table_key = table.upper() if table else None
         drop_sql = drop_by_table.get(table_key) if table_key else None
 
+        # if a drop exists for this table, emit ExecSQL step first
         if drop_sql and table:
             drop_step_name = f"DROP_{block.block_number:02d}_{table}"
             dx, dy = _step_position(len(step_names))
@@ -444,20 +331,17 @@ def generate_ktr(
 
     result.step_count = len(step_names)
 
-    # Create hops to connect steps sequentially
-    # Each step connects to the next in order, forming a pipeline
     for i in range(len(step_names) - 1):
         hop_elem = _build_step_hop(step_names[i], step_names[i + 1])
         root.append(hop_elem)
 
-    # Step error handling (empty — Pentaho expects the element)
+    # step error handling — Pentaho expects the element even when empty
     ET.SubElement(root, "step_error_handling")
 
-    # Slave servers (empty — only needed for clustered execution)
+    # slave server stubs — required by the Pentaho XML schema
     ET.SubElement(root, "slave-step-copy-partition-distribution")
     ET.SubElement(root, "slave_transformation").text = "N"
 
-    # Convert the tree to a string
     ET.indent(root, space="  ")
     result.xml_string = ET.tostring(root, encoding="unicode", xml_declaration=True)
 
@@ -468,15 +352,7 @@ def write_ktr(
     ktr_result: KtrResult,
     output_path: str | Path,
 ) -> Path:
-    """Write a KtrResult to a .ktr file on disk.
-
-    Args:
-        ktr_result:   The result from generate_ktr().
-        output_path:  Where to save the file. Adds .ktr extension if missing.
-
-    Returns:
-        The resolved Path to the written file.
-    """
+    """Write KtrResult XML to a .ktr file."""
     path = Path(output_path)
     if path.suffix.lower() != ".ktr":
         path = path.with_suffix(".ktr")

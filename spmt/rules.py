@@ -1,20 +1,4 @@
-"""
-spmt/rules.py — Conversion rule definitions for SAS PROC SQL to Oracle SQL.
-
-Defines all 42 conversion rules as structured data using dataclasses.
-Rules are organized into following 8 categories:
-    1. null_handling    — IS MISSING, '31Dec9999'd, NVL, SAS sum()
-    2. date_functions   — INTNX, today(), date literals, mdy()
-    3. string_functions — UPCASE, LOWCASE, STRIP, COMPRESS
-    4. macro_variables  — &var., %LET/%GLOBAL, LIBNAME/%include
-    5. type_conversion  — PUT(), CHOOSEC/INPUT
-    6. sas_keywords     — CALCULATED, 'Name'n, NOT=, CONTAINS, FORMAT=, etc.
-    7. table_mapping    — Dynamic suffixes, chained temps, time slices, PK_STAND
-    8. join_patterns    — RIGHT JOIN semantics, inline VALUES, MAX() subquery
-
-Each rule carries a regex pattern for detection and a replacement template
-(or special handler flag) for the converter to apply.
-"""
+"""SAS→Oracle conversion rule definitions. 42 rules across 8 categories."""
 
 from __future__ import annotations
 
@@ -23,8 +7,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
-
-# Enums
 
 class RuleCategory(str, Enum):
     """Broad grouping for conversion rules."""
@@ -45,24 +27,9 @@ class Complexity(str, Enum):
     HIGH = "high"
 
 
-# Core dataclass
-
 @dataclass(frozen=True)
 class ConversionRule:
-    """A single SAS→Oracle conversion rule.
-
-    Attributes:
-        rule_id:             Unique identifier (R-01 … R-42).
-        category:            One of the 8 RuleCategory values.
-        sas_pattern:         Compiled regex that detects the SAS construct.
-        oracle_replacement:  Replacement string (may contain \\1 back-refs)
-                             or the sentinel ``"__HANDLER__"`` when a simple
-                             regex substitution is not sufficient and the
-                             converter must invoke a dedicated handler.
-        description:         Human-readable explanation of the conversion.
-        complexity:          basic / medium / high.
-        notes:               Optional extra context for documentation.
-    """
+    """A single SAS→Oracle conversion rule. '__HANDLER__' means the converter has a dedicated method."""
     rule_id: str
     category: RuleCategory
     sas_pattern: re.Pattern
@@ -72,14 +39,11 @@ class ConversionRule:
     notes: str = ""
 
 
-# Helper — compiling with IGNORECASE + DOTALL where appropriate
-
 def _pat(pattern: str, flags: int = re.IGNORECASE) -> re.Pattern:
-    """Compile *pattern* with default case-insensitive flag."""
     return re.compile(pattern, flags)
 
 
-# CATEGORY 1 — NULL HANDLING  (4 rules)
+# null handling
 
 R01 = ConversionRule(
     rule_id="R-01",
@@ -136,7 +100,7 @@ R34 = ConversionRule(
 )
 
 
-# CATEGORY 2 — DATE FUNCTIONS  (7 rules)
+# date functions
 
 R05 = ConversionRule(
     rule_id="R-05",
@@ -222,7 +186,7 @@ R27 = ConversionRule(
 )
 
 
-# CATEGORY 3 — STRING FUNCTIONS  (5 rules)
+# string functions
 
 R12 = ConversionRule(
     rule_id="R-12",
@@ -278,7 +242,7 @@ R16 = ConversionRule(
 )
 
 
-# CATEGORY 4 — MACRO VARIABLES  (3 rules)
+# macro variables
 
 R02 = ConversionRule(
     rule_id="R-02",
@@ -318,7 +282,7 @@ R37 = ConversionRule(
 )
 
 
-# CATEGORY 5 — TYPE CONVERSION  (4 rules)
+# type conversion
 
 R20 = ConversionRule(
     rule_id="R-20",
@@ -374,7 +338,7 @@ R23 = ConversionRule(
 )
 
 
-# CATEGORY 6 — SAS KEYWORDS  (11 rules)
+# SAS keywords
 
 R04 = ConversionRule(
     rule_id="R-04",
@@ -551,7 +515,7 @@ R41 = ConversionRule(
 )
 
 
-# CATEGORY 7 — TABLE MAPPING  (5 rules)
+# table mapping
 
 R30 = ConversionRule(
     rule_id="R-30",
@@ -622,12 +586,12 @@ R40 = ConversionRule(
     complexity=Complexity.HIGH,
     notes=(
         "Pattern like (SELECT desc FROM lookup WHERE sysdate BETWEEN valid_from AND valid_to "
-        "AND key = t1.key).  Valid Oracle; just ensure date expressions are converted."
+        "AND key = t1.key).  Valid Oracle SQL; just ensure date expressions are converted."
     ),
 )
 
 
-# CATEGORY 8 — JOIN PATTERNS  (3 rules)
+# join patterns
 
 R31 = ConversionRule(
     rule_id="R-31",
@@ -671,27 +635,24 @@ R42 = ConversionRule(
 )
 
 
-# Rule registry
-
 ALL_RULES: list[ConversionRule] = [
-    # Category 1 — NULL handling
+    # null handling
     R01, R11, R33, R34,
-    # Category 2 — Date functions
+    # date functions
     R05, R06, R07, R08, R09, R10, R27,
-    # Category 3 — String functions
+    # string functions
     R12, R13, R14, R15, R16,
-    # Category 4 — Macro variables
+    # macro variables
     R02, R03, R37,
-    # Category 5 — Type conversion
+    # type conversion
     R20, R21, R22, R23,
-    # Category 6 — SAS keywords
+    # SAS keywords
     R04, R17, R18, R19, R24, R25, R26, R28, R28b, R28c, R28d, R28e, R29, R36, R41,
-    # Category 7 — Table mapping
+    # table mapping
     R30, R35, R38, R39, R40,
-    # Category 8 — Join patterns
+    # join patterns
     R31, R32, R42,
 ]
-"""Flat list of every ConversionRule, in canonical order."""
 
 
 def get_rules_by_category() -> dict[RuleCategory, list[ConversionRule]]:
@@ -703,7 +664,7 @@ def get_rules_by_category() -> dict[RuleCategory, list[ConversionRule]]:
 
 
 def get_rule_by_id(rule_id: str) -> Optional[ConversionRule]:
-    """Look up a single rule by its ID string (e.g. ``'R-01'``)."""
+    """Look up a single rule by its ID string (e.g. 'R-01')."""
     for rule in ALL_RULES:
         if rule.rule_id == rule_id:
             return rule
@@ -727,8 +688,6 @@ def get_keep_rules() -> list[ConversionRule]:
     """Return detection-only rules (valid Oracle — no conversion needed)."""
     return [r for r in ALL_RULES if r.oracle_replacement == "__KEEP__"]
 
-
-# Summary helpers for documenter and CLI --verbose help
 
 def rule_summary() -> str:
     """Return a human-readable summary table of all rules."""

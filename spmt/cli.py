@@ -80,8 +80,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("input_path", help="Path to a .sas file or a directory of .sas files")
     parser.add_argument(
         "--output",
-        default="output",
-        help="Directory where converted files are written (default: output)",
+        default="data_outputs/spmt",
+        help="Directory where converted files are written (default: data_outputs/spmt)",
     )
     parser.add_argument(
         "--format",
@@ -123,7 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def convert_sas_to_oracle(sas_code: str) -> str:
-    """The in-memory conversion helper described in the application flow."""
+    """Convert SAS source code to Oracle SQL in memory."""
     parse_result = parse_string(sas_code)
     conversion_result = convert_parse_result(
         parse_result,

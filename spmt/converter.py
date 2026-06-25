@@ -1,30 +1,8 @@
-"""
-spmt/converter.py
+"""Pipeline converter: turns parsed SAS PROC SQL blocks into Oracle SQL.
 
-This is the engine that ties the other modules together. The parser hands me
-a list of PROC SQL blocks, plus the %LET declarations and the dropds calls.
-For each block I run a fixed sequence of stages that turn SAS PROC SQL into
-Oracle-compatible SQL. The rules themselves live in rules.py, the macro
-variable work lives in variable_handler.py, and the library remapping lives
-in table_mapper.py. I keep this file focused on orchestration plus the few
-conversions that are too context-dependent for a plain regex swap.
-
-Each block goes through these stages in this order:
-  1. strip the PROC SQL / QUIT wrapper
-  2. handle any inline %_eg_conditional_dropds call
-  3. apply macro variable substitution
-  4. apply library to schema table mapping
-  5. apply the conversion rules (the smart handlers first, then the simple
-     regex swaps from rules.py)
-  6. remove FORMAT= and LABEL= attributes
-  7. remove ORDER BY from a CREATE TABLE AS SELECT
-  8. rename SAS name literals like 'Linkage Type'n to a valid identifier
-
-The order matters in a few places and I explain why at each stage. One thing
-I lean on a lot: every transform is written so that running it twice does
-nothing the second time. That means I do not have to worry too much about a
-rule firing once here and again later. It just will not match anything the
-second time.
+Stages per block: strip wrapper → inline dropds → macro vars → table mapping
+  → conversion rules → strip FORMAT/LABEL → remove ORDER BY in CTAS → name literals.
+All transforms are idempotent.
 """
 
 from __future__ import annotations
@@ -43,17 +21,9 @@ from spmt.rules import (
 from spmt.parser import ParsedBlock, ParseResult
 
 
-# Result objects
-
 @dataclass
 class ConversionResult:
-    """What I return for a single PROC SQL block.
-
-    The task only asked for original_sql, converted_sql, rules_applied and
-    warnings. I added block_number and target_table as well because the
-    documenter and the CLI both need them later, and carrying them here
-    saves a second pass over the SQL.
-    """
+    """Result for one converted PROC SQL block."""
     block_number: int
     original_sql: str
     converted_sql: str
@@ -64,17 +34,13 @@ class ConversionResult:
 
 @dataclass
 class FileConversionResult:
-    """The whole file after conversion: every block plus the file level bits
-    that do not belong to any single block (drop statements and the parameter
-    list pulled from the %LET declarations)."""
+    """All blocks plus file-level drop statements and parameter names."""
     source_file: str = ""
     blocks: List[ConversionResult] = field(default_factory=list)
     drop_statements: List[str] = field(default_factory=list)
     parameters: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
 
-
-# Small helpers used in several places
 
 _MONTHS = {
     "jan": "01", "feb": "02", "mar": "03", "apr": "04", "may": "05", "jun": "06",
@@ -83,12 +49,7 @@ _MONTHS = {
 
 
 def _sanitize_identifier(name: str) -> str:
-    """Turn a SAS name literal into a valid Oracle identifier.
-
-    Oracle does not allow spaces or most special characters in a plain
-    identifier, so I replace any run of those with a single underscore,
-    drop leading and trailing underscores, and upper-case the result.
-    """
+    """Turn a SAS name literal (e.g. 'My Column'n) into a valid Oracle identifier."""
     cleaned = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_").upper()
     if not cleaned:
         cleaned = "COL"
@@ -98,13 +59,7 @@ def _sanitize_identifier(name: str) -> str:
 
 
 def _rid(keyword: str, fallback: str) -> str:
-    """Find the real rule id whose description mentions a keyword.
-
-    I do this instead of hard-coding numbers because the rule ids in rules.py
-    have shifted around (R-28 got split, some patterns merged). Looking the id
-    up by description keeps the reported rule id correct even if the numbering
-    changes. If nothing matches I fall back to a readable label.
-    """
+    """Find a rule's ID by matching its description. Avoids hardcoding IDs that shift."""
     low = keyword.lower()
     for rule in ALL_RULES:
         if low in rule.description.lower():
@@ -122,17 +77,8 @@ def _detect_target_table(sql: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
-# The converter
-
 class Converter:
-    """Runs the eight stage pipeline over each block.
-
-    I pass the variable handler and table mapper in rather than building them
-    inside, for two reasons. First, the CLI already builds them from the config
-    files and can hand them straight over. Second, the unit tests can run the
-    converter on its own with those set to None, in which case stages 3 and 4
-    are simply skipped and the rest still works.
-    """
+    """Eight-stage SAS→Oracle SQL converter. Pass None for variable_handler/table_mapper to skip those stages."""
 
     def __init__(
         self,
@@ -143,12 +89,8 @@ class Converter:
         self.variable_handler = variable_handler
         self.table_mapper = table_mapper
         self.rules = rules if rules is not None else ALL_RULES
-        # Name literal renames carry across blocks. When block 1 creates a
-        # column from 'Linkage Type'n, later blocks reference the same literal,
-        # so the same rename applies. I keep the map here for reporting.
+        # name literal renames carry across blocks — same literal must map consistently
         self._renames: dict = {}
-
-    # Public entry points
 
     def convert_block(self, block: ParsedBlock) -> ConversionResult:
         """Convert one parsed block and return a ConversionResult."""
@@ -190,19 +132,14 @@ class Converter:
         )
 
     def convert_file(self, parse_result: ParseResult) -> FileConversionResult:
-        """Convert every block in a parsed file and collect the file level bits."""
+        """Convert every block in a parsed file and collect the file-level bits."""
         result = FileConversionResult(source_file=parse_result.source_file)
 
-        # The %_eg_conditional_dropds calls sit outside the PROC SQL blocks, so
-        # the parser hands them to me separately. I turn each one into an Oracle
-        # drop statement and run the table name through the same mapper the
-        # blocks use, so the drop targets the real Oracle table.
+        # dropds calls sit outside PROC SQL blocks; map table name and emit Oracle DROP block
         for call in parse_result.dropds_calls:
             name = self._map_table_name(call.table_name)
             result.drop_statements.append(self._drop_if_exists(name))
 
-        # The %LET and %GLOBAL names become Pentaho parameters. I just collect
-        # the names here; the actual ${...} substitution happened per block.
         for decl in parse_result.macro_declarations:
             pname = getattr(decl, "pentaho_name", None) or decl.name
             if pname not in result.parameters:
@@ -216,11 +153,7 @@ class Converter:
     # Stage 1: strip the wrapper
 
     def _strip_wrapper(self, sql: str) -> str:
-        """Remove the leading PROC SQL; and the trailing QUIT;.
-
-        Oracle does not use PROC SQL blocks, so these wrapper lines just go.
-        I keep everything in between untouched at this stage.
-        """
+        """Remove PROC SQL; / QUIT; wrappers."""
         sql = re.sub(r"^\s*PROC\s+SQL\s*;\s*", "", sql, flags=re.IGNORECASE)
         sql = re.sub(r"\s*QUIT\s*;\s*$", "", sql, flags=re.IGNORECASE)
         return sql.strip()
@@ -228,12 +161,7 @@ class Converter:
     # Stage 2: inline dropds
 
     def _handle_inline_dropds(self, sql: str) -> Tuple[str, List[str], List[str]]:
-        """Convert any %_eg_conditional_dropds call found inside a block.
-
-        Normally the parser has already pulled these out, so a block will not
-        contain one. I still handle the inline case so nothing slips through if
-        a file is shaped differently from my test files.
-        """
+        """Convert inline %_eg_conditional_dropds calls (parser normally catches these first)."""
         applied: List[str] = []
         pattern = re.compile(
             r"%_eg_conditional_dropds\s*\(\s*([\w.]+)\s*\)\s*;",
@@ -248,9 +176,7 @@ class Converter:
         return pattern.sub(repl, sql), applied, []
 
     def _drop_if_exists(self, table_name: str) -> str:
-        """Oracle has no DROP TABLE IF EXISTS before 23ai, so I use the standard
-        anonymous block that drops the table and swallows the does-not-exist
-        error (ORA-00942). This is the safe equivalent on any Oracle version."""
+        # Oracle pre-23ai has no DROP TABLE IF EXISTS; swallow ORA-00942 (table/view does not exist)
         return (
             "BEGIN\n"
             f"   EXECUTE IMMEDIATE 'DROP TABLE {table_name}';\n"
@@ -262,14 +188,7 @@ class Converter:
     # Stage 3: macro variables
 
     def _apply_variables(self, sql: str) -> Tuple[str, List[str], List[str]]:
-        """Hand the SQL to the variable handler if I have one.
-
-        The handler returns a result object. I read the converted SQL from it
-        and, if it changed anything, I record the macro variable rule. I look
-        the handler up by a couple of method names because the handler has gone
-        through a few versions and I do not want this to break if the entry
-        point was renamed.
-        """
+        """Run variable handler if present; try multiple entry point names for compatibility."""
         vh = self.variable_handler
         if vh is None:
             return sql, [], []
@@ -296,12 +215,7 @@ class Converter:
     # Stage 4: table mapping
 
     def _apply_table_mapping(self, sql: str) -> Tuple[str, List[str], List[str]]:
-        """Hand the SQL to the table mapper if I have one.
-
-        Same defensive lookup as the variable handler. The mapper only touches
-        tokens whose left side is a known library, so SQL aliases like t1.col
-        are left alone. I just read the result back here.
-        """
+        """Run table mapper if present."""
         tm = self.table_mapper
         if tm is None:
             return sql, [], []
@@ -324,7 +238,7 @@ class Converter:
         return new_sql, applied, warnings
 
     def _map_table_name(self, name: str) -> str:
-        """Map a single library.table name (used by the drop statements)."""
+        """Map a single library.table name (used by drop statements)."""
         if self.table_mapper is None:
             return name
         mapped, _, _ = self._apply_table_mapping(name)
@@ -333,15 +247,7 @@ class Converter:
     # Stage 5: the rules
 
     def _apply_rules(self, sql: str) -> Tuple[str, List[str], List[str]]:
-        """Apply the conversion rules.
-
-        I run this in three passes. First the smart handlers, because several
-        of them depend on running in a set order (the active record check has
-        to beat the generic date literal, for example). Then the simple regex
-        rules from rules.py for the one to one swaps. Last, I check the handler
-        rules I did not implement and raise a warning only if their pattern
-        actually shows up, so the user knows a manual step is needed.
-        """
+        """Three-pass rule application: smart handlers first, then regex rules, then warn on unhandled patterns."""
         applied: List[str] = []
         warnings: List[str] = []
 
@@ -368,8 +274,7 @@ class Converter:
         return sql, applied, warnings
 
     def _handled_rule_ids(self) -> List[str]:
-        """Rule ids that the smart handlers and later stages already cover, so
-        the warning pass does not flag them as unhandled."""
+        """Rule IDs covered by smart handlers or later stages — excluded from the warning pass."""
         return [
             _rid("IS [NOT] MISSING", "R-01"),
             _rid("SAS sum() NULL-safe arithmetic", "R-34"),
@@ -382,14 +287,13 @@ class Converter:
         ]
 
     def _run_smart_handlers(self, sql: str) -> Tuple[str, List[str], List[str]]:
-        """The conversions that a plain regex swap cannot do on its own."""
+        """Conversions that can't be done with a plain regex swap."""
         applied: List[str] = []
         warnings: List[str] = []
 
-        # The order in this list is deliberate. Active record must run before
-        # the generic date literal so '31Dec9999'd becomes IS NULL and not a
-        # TO_DATE call. CALCULATED runs after the date handlers so the repeated
-        # expression is already in Oracle form when I copy it.
+        # Order matters: active_record must run before date_literal so '31Dec9999'd
+        # becomes IS NULL, not a TO_DATE call. CALCULATED runs after date handlers
+        # so the copied expression is already in Oracle form.
         steps: List[Callable[[str], Tuple[str, Optional[str], List[str]]]] = [
             self._h_active_record,
             self._h_date_literal,
@@ -414,9 +318,7 @@ class Converter:
         return sql, applied, warnings
 
     def _h_active_record(self, sql: str) -> Tuple[str, Optional[str], List[str]]:
-        """'31Dec9999'd is SAS shorthand for an open record. Oracle uses NULL,
-        so I rewrite the comparison itself, not just the literal. An equals turns
-        into IS NULL and a not-equals turns into IS NOT NULL."""
+        """'31Dec9999'd → IS NULL/IS NOT NULL on the surrounding comparison."""
         rid = _rid("31dec9999", "R-11")
         fired = False
         neg = re.compile(r"(?:NOT\s*=|<>|!=|\^=)\s*['\"]31Dec9999['\"][dD]", re.IGNORECASE)
@@ -428,9 +330,7 @@ class Converter:
         return sql, (rid if fired else None), []
 
     def _h_date_literal(self, sql: str) -> Tuple[str, Optional[str], List[str]]:
-        """A SAS date literal like '01JAN2025'd becomes a TO_DATE call. I read
-        the day, month abbreviation and year, then build a fixed YYYYMMDD form
-        which is the least ambiguous thing to feed Oracle."""
+        """'01JAN2025'd → TO_DATE('20250101', 'YYYYMMDD')."""
         rid = _rid("date literal", "R-10")
         pattern = re.compile(r"['\"](\d{1,2})([A-Za-z]{3})(\d{4})['\"][dD]")
         fired = [False]
@@ -448,8 +348,7 @@ class Converter:
         return sql, (rid if fired[0] else None), []
 
     def _h_is_missing(self, sql: str) -> Tuple[str, Optional[str], List[str]]:
-        """IS MISSING and IS NOT MISSING map straight to the Oracle null checks.
-        I keep the optional NOT so the meaning is preserved."""
+        """IS [NOT] MISSING → IS [NOT] NULL."""
         rid = _rid("missing", "R-01")
         pattern = re.compile(r"\bIS\s+(NOT\s+)?MISSING\b", re.IGNORECASE)
         fired = [False]
@@ -491,10 +390,7 @@ class Converter:
         return args
 
     def _h_sum(self, sql: str) -> Tuple[str, Optional[str], List[str]]:
-        """Convert SAS sum(a,b,...) NULL-safe arithmetic to NVL(a,0)+NVL(b,0).
-
-        Aggregate SUM(col) is already valid in Oracle and is left untouched.
-        """
+        """SAS sum(a,b,...) NULL-safe arithmetic → (NVL(a,0) + NVL(b,0)). Skips single-arg aggregate SUM."""
         rid = _rid("NULL-safe arithmetic", "R-34")
         fired = False
         out: List[str] = []
@@ -536,7 +432,7 @@ class Converter:
 
             args_text = sql[open_paren + 1 : j]
             args = self._split_top_level_args(args_text)
-            # One arg means Oracle aggregate SUM() or plain scalar pass-through.
+            # one arg = Oracle aggregate SUM() or scalar pass-through, leave it
             if len(args) <= 1:
                 out.append(sql[start : j + 1])
             else:
@@ -549,8 +445,7 @@ class Converter:
         return "".join(out), (rid if fired else None), []
 
     def _h_contains(self, sql: str) -> Tuple[str, Optional[str], List[str]]:
-        """SAS CONTAINS has no Oracle keyword. The equivalent is LIKE with the
-        search text wrapped in percent signs on both sides."""
+        """CONTAINS 'x' → LIKE '%x%'."""
         rid = _rid("contains", "R-36")
         pattern = re.compile(r"\bCONTAINS\s+'([^']*)'", re.IGNORECASE)
         fired = [False]
@@ -563,9 +458,7 @@ class Converter:
         return sql, (rid if fired[0] else None), []
 
     def _h_compress(self, sql: str) -> Tuple[str, Optional[str], List[str]]:
-        """COMPRESS strips characters. Plain COMPRESS(x) removes spaces, the 'kd'
-        modifier keeps digits and 'ka' keeps letters. Oracle has no direct match
-        for the modifiers, so I use REGEXP_REPLACE to drop everything else."""
+        """COMPRESS modifiers: plain → REPLACE spaces, 'kd' → keep digits REGEXP, 'ka' → keep alpha REGEXP."""
         rid = _rid("compress", "R-16")
         fired = [False]
 
@@ -587,17 +480,13 @@ class Converter:
         return sql, (rid if fired[0] else None), []
 
     def _h_today(self, sql: str) -> Tuple[str, Optional[str], List[str]]:
-        """today() returns the current date with no time part, so TRUNC(SYSDATE)
-        is the match in Oracle."""
+        """today() → TRUNC(SYSDATE)."""
         rid = _rid("today", "R-09")
         sql, n = re.subn(r"\btoday\s*\(\s*\)", "TRUNC(SYSDATE)", sql, flags=re.IGNORECASE)
         return sql, (rid if n else None), []
 
     def _h_intnx(self, sql: str) -> Tuple[str, Optional[str], List[str]]:
-        """INTNX shifts a date by a number of intervals. I only handle the month
-        interval here because that is the only one the test files use. The fourth
-        argument is the alignment: 'E' or 'END' means end of month, 'B' or
-        'BEGIN' means start of month, and no alignment means a plain shift."""
+        """INTNX(MONTH, date, n, align) → ADD_MONTHS/LAST_DAY/TRUNC. Only handles MONTH interval."""
         rid = _rid("intnx", "R-07")
         warnings: List[str] = []
         fired = [False]
@@ -633,9 +522,7 @@ class Converter:
         return sql, (rid if fired[0] else None), warnings
 
     def _h_mdy(self, sql: str) -> Tuple[str, Optional[str], List[str]]:
-        """mdy(month, day, year) builds a date in SAS. Oracle has no mdy, so I
-        rebuild the date with TO_DATE. I flag it for a check because once the
-        arguments are Pentaho parameters the formatting can need a second look."""
+        """mdy(m, d, y) → TO_DATE(...)."""
         rid = _rid("mdy", "R-27")
         warnings: List[str] = []
         fired = [False]
@@ -666,16 +553,13 @@ class Converter:
         return sql, (rid if fired[0] else None), warnings
 
     def _h_outer_union_corr(self, sql: str) -> Tuple[str, Optional[str], List[str]]:
-        """OUTER UNION CORR lines up columns by name and keeps duplicates. The
-        nearest Oracle behaviour is UNION ALL once the column lists match."""
+        """OUTER UNION CORR → UNION ALL."""
         rid = _rid("outer union", "R-17")
         sql, n = re.subn(r"\bOUTER\s+UNION\s+CORR\b", "UNION ALL", sql, flags=re.IGNORECASE)
         return sql, (rid if n else None), []
 
     def _h_double_quotes(self, sql: str) -> Tuple[str, Optional[str], List[str]]:
-        """SAS accepts double quoted string literals but Oracle reads double
-        quotes as an identifier. I switch them to single quotes, but only when
-        the text has no single quote inside, to avoid breaking the literal."""
+        """Double-quoted string literals → single-quoted (no embedded single quotes)."""
         rid = _rid("double quote", "R-04")
         pattern = re.compile(r'"([^"\']*)"')
         fired = [False]
@@ -688,10 +572,7 @@ class Converter:
         return sql, (rid if fired[0] else None), []
 
     def _match_open_paren(self, left: str) -> Optional[int]:
-        """Walk backwards from a closing parenthesis at the end of `left` and
-        return the index of the parenthesis that opens it. I skip over quoted
-        spans so a bracket sitting inside a string literal does not change the
-        depth count. Returns None if the brackets do not balance."""
+        """Walk back to find the opening paren index, skipping quoted spans."""
         i = len(left) - 1
         if i < 0 or left[i] != ")":
             return None
@@ -714,16 +595,10 @@ class Converter:
         return None
 
     def _h_calculated(self, sql: str) -> Tuple[str, Optional[str], List[str]]:
-        """Oracle has no CALCULATED keyword. SAS uses it to reuse a column alias
-        from the same SELECT. I find what each alias was defined as and paste
-        that expression back in wherever CALCULATED refers to it."""
+        """CALCULATED alias → inline the original expression."""
         rid = _rid("calculated", "R-24")
-        # Map each alias to the parenthesised expression it was built from. By
-        # the time this runs the expression may be wrapped several parentheses
-        # deep (INTNX turns into LAST_DAY(ADD_MONTHS(...))), and a FORMAT= or
-        # LABEL= attribute can sit between the expression and the AS keyword. A
-        # fixed regex cannot handle either, so I walk back from each AS keyword,
-        # skip any attribute, and balance the parentheses by hand.
+        # Build alias→expression map. FORMAT/LABEL attrs can sit between the expression
+        # and AS, and expressions nest arbitrarily deep — can't do this with a flat regex.
         defs = {}
         for m in re.finditer(r"\bAS\s+(\w+)", sql, re.IGNORECASE):
             alias = m.group(1).lower()
@@ -756,14 +631,9 @@ class Converter:
         return sql, (rid if fired[0] else None), []
 
     def _h_put(self, sql: str) -> Tuple[str, Optional[str], List[str]]:
-        """PUT applies a SAS format catalog, which does not exist in Oracle. I
-        generate a placeholder CASE WHEN that applies TO_CHAR() as a fallback,
-        but the real format conversion needs manual review of the SAS format
-        definition. The placeholder allows the SQL to execute with reasonable
-        defaults while flagging that custom formatting is needed."""
+        """PUT(col, FORMAT.) → CASE WHEN placeholder. Flags for manual review since SAS format catalogs have no Oracle equivalent."""
         warnings: List[str] = []
 
-        # Use a word boundary so PUT is not matched inside INPUT(...).
         pattern = re.compile(
             r"\bPUT\s*\(\s*([^,()]+?)\s*,\s*(\$?\w+\.?)\s*\)",
             re.IGNORECASE,
@@ -789,9 +659,7 @@ class Converter:
         return sql, None, warnings
 
     def _h_choosec(self, sql: str) -> Tuple[str, Optional[str], List[str]]:
-        """CHOOSEC picks a string by position. The clean Oracle version is a CASE
-        on the index, but the choices come from the SAS call and the index is
-        often wrapped in INPUT(). I flag it for a manual CASE rather than guess."""
+        """CHOOSEC has no Oracle equivalent; emit a warning for manual CASE rewrite."""
         warnings: List[str] = []
         if re.search(r"\bCHOOSEC\s*\(", sql, re.IGNORECASE):
             warnings.append(
@@ -803,9 +671,7 @@ class Converter:
     # Stage 6: FORMAT= and LABEL=
 
     def _remove_format_label(self, sql: str) -> Tuple[str, List[str]]:
-        """FORMAT= and LABEL= are display only in SAS and Oracle has no place for
-        them. I strip them out but I am careful to keep any AS alias that follows,
-        because that part is real and the downstream tables depend on it."""
+        """Strip FORMAT= and LABEL= display attributes."""
         applied: List[str] = []
 
         fmt = re.compile(r"\s*FORMAT\s*=\s*\$?\w+\.\d*", re.IGNORECASE)
@@ -826,10 +692,7 @@ class Converter:
     # Stage 7: ORDER BY in a CTAS
 
     def _remove_order_by_in_ctas(self, sql: str) -> Tuple[str, List[str], List[str]]:
-        """Oracle will not accept ORDER BY inside CREATE TABLE AS SELECT. I only
-        strip an ORDER BY that sits at the top level of the statement, not one
-        inside a subquery in parentheses, and only when this block is actually a
-        CREATE TABLE or CREATE VIEW."""
+        """Remove top-level ORDER BY from CREATE TABLE AS SELECT (Oracle rejects it)."""
         if not re.search(r"CREATE\s+(?:TABLE|VIEW)\b", sql, re.IGNORECASE):
             return sql, [], []
 
@@ -837,7 +700,7 @@ class Converter:
         if index is None:
             return sql, [], []
 
-        # Cut from ORDER BY up to the trailing semicolon or the end of the text.
+        # cut from ORDER BY to trailing semicolon or end
         tail = sql[index:]
         semi = tail.rfind(";")
         if semi == -1:
@@ -854,9 +717,7 @@ class Converter:
         )
 
     def _find_top_level_order_by(self, sql: str) -> Optional[int]:
-        """Return the position of an ORDER BY that is outside any parentheses and
-        outside any quoted string. This is what tells a CTAS level sort apart
-        from a sort inside an inline subquery."""
+        """Return position of ORDER BY that is outside all parens and quotes."""
         depth = 0
         quote = None
         i = 0
@@ -886,10 +747,7 @@ class Converter:
     # Stage 8: name literals
 
     def _rename_name_literals(self, sql: str) -> Tuple[str, List[str]]:
-        """SAS name literals like 'Linkage Type'n let a column have spaces. Oracle
-        cannot, so I turn each one into a clean identifier. I record the rename so
-        the same column keeps the same name everywhere it appears, including in
-        later blocks that reference it."""
+        """Replace 'My Column'n name literals with valid Oracle identifiers; consistent across blocks."""
         applied: List[str] = []
         pattern = re.compile(r"'([^'\r\n]+)'[nN](?![A-Za-z0-9_])")
         fired = [False]
@@ -908,20 +766,14 @@ class Converter:
             applied.append(_rid("name literal", "R-25"))
         return sql, applied
 
-    # Final tidy
-
     def _tidy_whitespace(self, sql: str) -> str:
-        """Removing attributes leaves stray double spaces and the odd space before
-        a comma. I clean those up so the output reads cleanly, without touching
-        anything inside quotes."""
+        """Clean up double spaces and space-before-comma artifacts left by attribute removal."""
         sql = re.sub(r"[ \t]{2,}", " ", sql)
         sql = re.sub(r"\s+,", ",", sql)
         sql = re.sub(r"\(\s+", "(", sql)
         sql = re.sub(r"\s+\)", ")", sql)
         return sql.strip()
 
-
-# Convenience entry point used by the CLI
 
 def convert_parse_result(
     parse_result: ParseResult,
