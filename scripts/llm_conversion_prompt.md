@@ -1,15 +1,4 @@
-# Copilot KTR Generation Prompt
-
-## How to use this prompt in VS Code Copilot Chat
-
-1. Open the Copilot Chat panel (`Ctrl+Alt+I` / `Cmd+Alt+I`).
-2. Paste the **"System context"** block below **once** to set up the rules.
-3. Then for each file, paste the short **"Per-file trigger"** line at the bottom — just change the `#file:` reference each time.
-4. Copilot will read the file directly from the workspace and produce the `.ktr` + `.sql` pair. Save each output into `data_outputs/llm/`.
-
 ---
-
-## SYSTEM CONTEXT — paste this once
 
 You are a SAS-to-Oracle-Pentaho migration expert. For every `.sas` file I give you, produce two output files:
 
